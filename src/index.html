@@ -32,8 +32,7 @@ body {
 
 #graph-container {
   position: relative;
-  min-width: 100%;
-  min-height: 100%;
+  margin: 0 auto;
 }
 
 /* Layer bands */
@@ -315,6 +314,8 @@ function computeBoxSizes(allSubmodules, submodules) {
 // rowIdx is a global vertical-row index used to detect same-row pairs for arrows.
 function computeLayout(layers, allSubmodules, submodules, boxSizes) {
   const layout = {};
+  // bandSms[i] = list of submodule names placed in band i (for centering pass)
+  const bandSms = [];
   let bandY = PAD_Y;
   let globalRowIdx = 0;
 
@@ -337,6 +338,7 @@ function computeLayout(layers, allSubmodules, submodules, boxSizes) {
       rowHeights.push(maxH);
     }
 
+    const thisBandSms = [];
     let colX = PAD_X;
     for (const col of moduleCols) {
       let colW = 0;
@@ -354,6 +356,7 @@ function computeLayout(layers, allSubmodules, submodules, boxSizes) {
         let smX = colX + Math.round((colW - rowW) / 2);
         for (const sm of subRow) {
           layout[sm] = { x: smX, y: subRowY, submodule: sm, rowIdx: globalRowIdx + r };
+          thisBandSms.push(sm);
           smX += (boxSizes[sm] || {}).w + BOX_GAP_X;
         }
         subRowY += rowHeights[r] + BOX_GAP_Y;
@@ -361,11 +364,23 @@ function computeLayout(layers, allSubmodules, submodules, boxSizes) {
       colX += colW + BOX_GAP_X * 2;
     }
 
+    bandSms.push(thisBandSms);
     globalRowIdx += maxSubRows;
     const bandH = rowHeights.reduce((s, h) => s + h, 0)
                 + (maxSubRows - 1) * BOX_GAP_Y
                 + BOX_PAD_Y * 2;
     bandY += bandH + BOX_GAP_Y;
+  }
+
+  // Second pass: center each band horizontally around the widest band
+  const totalContentW = Math.max(...Object.values(layout).map(p => p.x + boxSizes[p.submodule].w)) - PAD_X;
+  for (const sms of bandSms) {
+    if (!sms.length) continue;
+    const bandMinX = Math.min(...sms.map(sm => layout[sm].x));
+    const bandMaxX = Math.max(...sms.map(sm => layout[sm].x + boxSizes[sm].w));
+    const bandContentW = bandMaxX - bandMinX;
+    const shift = Math.round((totalContentW - bandContentW) / 2);
+    if (shift > 0) for (const sm of sms) layout[sm].x += shift;
   }
 
   return layout;
