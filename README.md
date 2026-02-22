@@ -146,7 +146,7 @@ Paste the following prompt into your AI agent of choice (Claude, GPT-4, Gemini, 
 > - Only reference units that you have also described with their own `### ` heading.
 > - Use the exact submodule path from `layers.json` as the prefix.
 > - It is fine to omit purely internal helper units; focus on the public interface of each submodule.
-> - If a class has important methods, describe them as separate units (e.g. `services.ml.Model` and `services.ml.Model.predict`).
+> - Each unit heading must be exactly `submodule.UnitName` — two segments joined by the last dot. `services.ml.Model` is a valid heading (submodule `services.ml`, name `Model`). Do **not** write method names as headings (e.g. `services.ml.Model.predict` is wrong — it would be parsed as submodule `services.ml.Model`, which does not exist). If you want to reference a specific method as a dependency, use `` `@services.ml.Model.predict` `` in the body text; it will be resolved to the parent unit `services.ml.Model` automatically.
 > - Do not invent dependencies that do not exist in the actual code.
 >
 > Produce both files in full. Think carefully about the layer ordering before writing `layers.json` — the most common mistake is placing a module too high when it is actually called by others.

@@ -173,6 +173,33 @@ def test_parse_at_in_backticks_without_at_not_a_dep():
     assert units["a.b.f"]["dependencies"] == {}
 
 
+def test_parse_method_style_heading_splits_at_last_dot():
+    # A heading like "services.ml.Model.predict" should split into
+    # submodule="services.ml.Model", name="predict" — not submodule="services.ml".
+    # This means the heading is almost certainly wrong (Model is a unit, not a submodule),
+    # which validate_unit_paths will reject as an unknown submodule.
+    units, order = parse_unit_descriptions("### services.ml.Model.predict\n\nRuns inference.")
+    assert units["services.ml.Model.predict"]["submodule"] == "services.ml.Model"
+    assert units["services.ml.Model.predict"]["name"] == "predict"
+    assert order == {"services.ml.Model": ["predict"]}
+
+
+def test_validate_method_style_heading_rejected_as_unknown_submodule(caplog):
+    # "services.ml.Model.predict" parsed → submodule "services.ml.Model", which is
+    # not in the submodule list, so validate_unit_paths must reject it.
+    units = {
+        "services.ml.Model.predict": {
+            "submodule": "services.ml.Model",
+            "name": "predict",
+            "description": "",
+            "dependencies": {},
+        }
+    }
+    result, caplog = _capture(validate_unit_paths, units, ["services.ml"], caplog=caplog)
+    assert result is False
+    assert "Unknown Submodule: services.ml.Model.predict" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # flatten_layers
 # ---------------------------------------------------------------------------
