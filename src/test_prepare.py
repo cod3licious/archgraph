@@ -67,15 +67,16 @@ def _capture(fn, *args, caplog, **kwargs):
 
 
 def _make_units(deps_map: dict) -> dict:
-    return {
-        path: {
-            "submodule": path.rsplit(".", 1)[0],
-            "name": path.rsplit(".", 1)[1],
+    units = {}
+    for path, deps in deps_map.items():
+        submodule, name = path.rsplit(".", 1)
+        units[path] = {
+            "submodule": submodule,
+            "name": name,
             "description": "",
             "dependencies": dict.fromkeys(deps, True),
         }
-        for path, deps in deps_map.items()
-    }
+    return units
 
 
 # ---------------------------------------------------------------------------

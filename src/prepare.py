@@ -17,7 +17,8 @@ def parse_unit_descriptions(unit_descriptions: str) -> tuple[dict, dict]:
     units: dict[str, dict] = {}
     unit_order: dict[str, list[str]] = {}
 
-    for header, body in re.findall(r"^### ([^\n]+)\n(.*?)(?=^### |\Z)", unit_descriptions, flags=re.MULTILINE | re.DOTALL):
+    pattern = re.compile(r"^### ([^\n]+)\n(.*?)(?=^### |\Z)", re.MULTILINE | re.DOTALL)
+    for header, body in pattern.findall(unit_descriptions):
         unit_path = header.strip()
         description = body.strip()
 
@@ -84,13 +85,12 @@ def validate_unit_paths(units: dict, all_submodules: list[str]) -> bool:
     for unit_path, unit in units.items():
         if unit_path in submodule_set:
             logger.error(
-                "Unit Is Submodule: %s: a unit is supposed to be contained in a submodule "
-                "(like a function or class), not be the submodule itself",
-                unit_path,
+                f"Unit Is Submodule: {unit_path}: a unit is supposed to be contained in a submodule "
+                "(like a function or class), not be the submodule itself"
             )
             valid = False
         elif unit["submodule"] not in submodule_set:
-            logger.error("Unknown Submodule: %s is not part of any submodule in the provided architectural layers", unit_path)
+            logger.error(f"Unknown Submodule: {unit_path} is not part of any submodule in the provided architectural layers")
             valid = False
     return valid
 
@@ -105,7 +105,7 @@ def create_submodules_dict(all_submodules: list[str], unit_order: dict) -> dict:
     for sm in all_submodules:
         units_list = unit_order.get(sm, [])
         if not units_list:
-            logger.warning("Submodule %s has no units", sm)
+            logger.warning(f"Submodule {sm} has no units")
         submodules[sm] = {
             "module": sm.split(".")[0],
             "color": "#D3D3D3",
@@ -163,14 +163,14 @@ def resolve_dependencies(units: dict) -> dict:
                 # Try stripping the last segment (e.g. Model.predict → Model)
                 parent = dep.rsplit(".", 1)[0] if "." in dep else None
                 if parent and parent in unit_paths:
-                    logger.warning("%s dependency %s was matched to %s", unit_path, dep, parent)
+                    logger.warning(f"{unit_path} dependency {dep} was matched to {parent}")
                     resolved.setdefault(parent, True)  # deduplicates multiple sub-refs
                 else:
-                    logger.error("Referenced Unit Unknown: %s depends on %s, which could not be resolved", unit_path, dep)
+                    logger.error(f"Referenced Unit Unknown: {unit_path} depends on {dep}, which could not be resolved")
                     error_count += 1
         unit["dependencies"] = resolved
 
-    logger.info("Dependency resolution completed with %d error(s)", error_count)
+    logger.info(f"Dependency resolution completed with {error_count} error(s)")
     return result
 
 
@@ -232,7 +232,7 @@ def check_layer_violations(units: dict, layers: dict) -> dict:
             rr_b, ir_b, root_b = info_b
             allowed = rr_b > rr_a or (rr_b == rr_a and root_a == root_b and ir_b > ir_a)
             if not allowed:
-                logger.warning("Architecture Validation: %s must not depend on %s", unit_path, dep_path)
+                logger.warning(f"Architecture Validation: {unit_path} must not depend on {dep_path}")
                 unit["dependencies"][dep_path] = False
 
     return result
@@ -304,9 +304,9 @@ if __name__ == "__main__":
     try:
         result = process_files(unit_descriptions, layers_data)
     except ValueError as e:
-        logger.critical("%s", e)
+        logger.critical(str(e))
         sys.exit(1)
 
     output_path = Path(__file__).parent / "result.json"
     output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
-    logger.info("Saved result to %s", output_path)
+    logger.info(f"Saved result to {output_path}")
