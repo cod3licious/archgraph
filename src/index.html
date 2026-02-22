@@ -61,7 +61,6 @@ body {
   position: absolute;
   top: 0; left: 0;
   pointer-events: none;
-  overflow: visible;
   z-index: 1;
 }
 
@@ -69,7 +68,6 @@ body {
   position: absolute;
   top: 0; left: 0;
   pointer-events: none;
-  overflow: visible;
   z-index: 2;
 }
 
@@ -214,13 +212,21 @@ const TITLE_H = 26;
 const BOX_PAD_Y = 10; // top+bottom padding inside box units area
 const COLS_THRESHOLD = 4; // use 2 columns when unit count > this
 
+const VALID_COLOR     = '#333'; // arrow stroke for valid dependencies
+const VALID_SYM_COLOR = '#555'; // port symbol fill for valid dependencies (slightly lighter)
+const VIOLATION_COLOR = '#b03a2e'; // brick red for dependency violations
+
+const BEZIER_CP_MIN    = 20;   // minimum bezier control-point offset
+const BEZIER_CP_FACTOR = 0.25; // control-point length as fraction of arc distance
+const BEZIER_CP_MAX    = 120;  // maximum bezier control-point offset
+
 // ─── Fetch & bootstrap ───────────────────────────────────────────────────────
 fetch('result.json')
   .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
   .then(render)
   .catch(err => {
     document.getElementById('graph-container').innerHTML =
-      `<p style="padding:24px;color:#b03a2e">Failed to load result.json: ${err.message}</p>`;
+      `<p style="padding:24px;color:${VIOLATION_COLOR}">Failed to load result.json: ${err.message}</p>`;
   });
 
 // ─── Main render ─────────────────────────────────────────────────────────────
@@ -245,7 +251,7 @@ function render(data) {
   container.style.height = totalH + 'px';
 
   // 5. Draw layer bands
-  drawBands(container, rootBands, layout, layers, allSubmodules, boxSizes, totalW);
+  drawBands(container, rootBands, layout, layers, allSubmodules, boxSizes);
 
   // 6. Draw boxes
   const boxEls = {};
@@ -387,10 +393,8 @@ function computeLayout(layers, allSubmodules, submodules, boxSizes) {
 }
 
 // ─── Draw layer bands ─────────────────────────────────────────────────────────
-function drawBands(container, rootBands, layout, layers, allSubmodules, boxSizes, totalW) {
+function drawBands(container, rootBands, layout, layers, allSubmodules, boxSizes) {
   // Compute vertical extents for each band from actual box positions
-  let bandIdx = 0;
-  let smIdx = 0;
   const rootLayerRows = layers.root_layers;
 
   // Collect ordered submodules per root row
@@ -416,7 +420,6 @@ function drawBands(container, rootBands, layout, layers, allSubmodules, boxSizes
     band.className = 'layer-band';
     band.style.top    = top + 'px';
     band.style.height = (bottom - top) + 'px';
-    band.style.width  = totalW + 'px';
 
     const label = document.createElement('div');
     label.className = 'layer-label';
@@ -492,6 +495,19 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
   const SYM_GAP = 14; // center-to-center spacing between symbols on same edge
   const SYM_MARGIN = SYM_R + 4;
 
+  // Returns which box sides a directed edge exits/enters, based on relative row/position.
+  function connectionSides(from, to) {
+    const rf = layout[from].rowIdx, rt = layout[to].rowIdx;
+    if (rf < rt) return { fromSide: 'bottom', toSide: 'top' };
+    if (rf > rt) return { fromSide: 'top',    toSide: 'bottom' };
+    // Same row: route left↔right based on horizontal center positions
+    const cf = layout[from].x + boxSizes[from].w / 2;
+    const ct = layout[to].x   + boxSizes[to].w   / 2;
+    return cf <= ct
+      ? { fromSide: 'right', toSide: 'left' }
+      : { fromSide: 'left',  toSide: 'right' };
+  }
+
   // Determine which side each connection uses
   // connSide[sm][side] = [{partner, isOut, valid}, ...]
   const connSide = {};
@@ -499,16 +515,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
     connSide[sm] = { top: [], bottom: [], left: [], right: [] };
 
   for (const { from, to, valid } of edges) {
-    const rf = layout[from].rowIdx, rt = layout[to].rowIdx;
-    let fromSide, toSide;
-    if (rf < rt)      { fromSide = 'bottom'; toSide = 'top'; }
-    else if (rf > rt) { fromSide = 'top';    toSide = 'bottom'; }
-    else {
-      const cf = layout[from].x + boxSizes[from].w / 2;
-      const ct = layout[to].x   + boxSizes[to].w   / 2;
-      fromSide = cf <= ct ? 'right' : 'left';
-      toSide   = cf <= ct ? 'left'  : 'right';
-    }
+    const { fromSide, toSide } = connectionSides(from, to);
     connSide[from][fromSide].push({ partner: to,   isOut: true,  valid });
     connSide[to][toSide].push(    { partner: from, isOut: false, valid });
   }
@@ -544,7 +551,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
       const start = Math.max(SYM_MARGIN, (edgeLen - totalSpan) / 2);
 
       items.forEach(({ partner, isOut, valid }, i) => {
-        const color = valid ? '#555' : '#b03a2e';
+        const color = valid ? VALID_SYM_COLOR : VIOLATION_COLOR;
         const t = start + i * SYM_GAP;
         // Port position: on the box edge (used as arrow endpoint)
         let x, y;
@@ -595,7 +602,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
     const path = svgEl('path');
     path.setAttribute('d', bezierPath(p1, p2));
     path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', valid ? '#333' : '#b03a2e');
+    path.setAttribute('stroke', valid ? VALID_COLOR : VIOLATION_COLOR);
     path.setAttribute('stroke-width', '2');
     path.classList.add('arrow');
     if (!valid) path.classList.add('violation');
@@ -616,7 +623,7 @@ function svgEl(tag) {
 // Both outgoing (p1) and incoming (p2) control points extend outward from the box face.
 function bezierPath(p1, p2) {
   const dist = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
-  const cp   = Math.min(Math.max(20, dist * 0.25), 120);
+  const cp   = Math.min(Math.max(BEZIER_CP_MIN, dist * BEZIER_CP_FACTOR), BEZIER_CP_MAX);
 
   // Outward tangent vector for a given side
   const tangent = side => {
@@ -665,6 +672,39 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
     }
   }
 
+  // Apply dimming/highlighting to all boxes, arrows, and port symbols.
+  // unitClassifier(sm, unitPath) → class to assign to each unit in a focused box.
+  function applyHighlighting(relevant, relevantArrows, unitClassifier) {
+    for (const [sm, el] of Object.entries(boxEls)) {
+      if (relevant.has(sm)) {
+        el.classList.remove('dimmed');
+        el.classList.add('focused');
+        for (const u of el.querySelectorAll('.unit-name')) {
+          u.classList.remove(...UNIT_CLASSES);
+          applyUnitClass(u, unitClassifier(sm, u.dataset.unit));
+        }
+      } else {
+        el.classList.add('dimmed');
+        el.classList.remove('focused');
+        for (const u of el.querySelectorAll('.unit-name')) {
+          u.classList.remove(...UNIT_CLASSES);
+          u.classList.add('dimmed');
+        }
+      }
+    }
+    for (const [key, el] of Object.entries(arrowEls)) {
+      if (relevantArrows.has(key)) { el.classList.add('visible'); el.classList.remove('dimmed'); }
+      else { el.classList.remove('visible'); el.classList.add('dimmed'); }
+    }
+    for (const [sm, syms] of Object.entries(portSymbolEls))
+      for (const el of syms) {
+        const p = el.dataset.partner;
+        if (relevantArrows.has(`${sm}->${p}`) || relevantArrows.has(`${p}->${sm}`))
+          el.classList.remove('dimmed');
+        else el.classList.add('dimmed');
+      }
+  }
+
   function selectSubmodule(sm) {
     selection = { type: 'submodule', id: sm };
 
@@ -692,42 +732,12 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
       ...inDeps.map(s => `${s}->${sm}`),
     ]);
 
-    for (const [s, el] of Object.entries(boxEls)) {
-      if (relevant.has(s)) {
-        el.classList.remove('dimmed');
-        el.classList.add('focused');
-        // Start all units in focused boxes as dimmed, then upgrade
-        for (const u of el.querySelectorAll('.unit-name'))
-          u.classList.remove(...UNIT_CLASSES);
-        for (const u of el.querySelectorAll('.unit-name')) {
-          const uPath = u.dataset.unit;
-          if (s === sm)                       applyUnitClass(u, 'is-selected');
-          else if (referencedUnits.has(uPath)) applyUnitClass(u, 'is-callee');
-          else if (referencingUnits.has(uPath)) applyUnitClass(u, 'is-caller');
-          else                                  applyUnitClass(u, 'dimmed');
-        }
-      } else {
-        el.classList.add('dimmed');
-        el.classList.remove('focused');
-        for (const u of el.querySelectorAll('.unit-name')) {
-          u.classList.remove(...UNIT_CLASSES);
-          u.classList.add('dimmed');
-        }
-      }
-    }
-
-    for (const [key, el] of Object.entries(arrowEls)) {
-      if (relevantArrows.has(key)) { el.classList.add('visible'); el.classList.remove('dimmed'); }
-      else { el.classList.remove('visible'); el.classList.add('dimmed'); }
-    }
-    for (const [s, syms] of Object.entries(portSymbolEls))
-      for (const el of syms) {
-        const p = el.dataset.partner;
-        if (relevantArrows.has(`${s}->${p}`) || relevantArrows.has(`${p}->${s}`))
-          el.classList.remove('dimmed');
-        else el.classList.add('dimmed');
-      }
-
+    applyHighlighting(relevant, relevantArrows, (s, uPath) => {
+      if (s === sm)                        return 'is-selected';
+      if (referencedUnits.has(uPath))      return 'is-callee';
+      if (referencingUnits.has(uPath))     return 'is-caller';
+      return 'dimmed';
+    });
     showSubmoduleDetail(sm, submodules[sm], units);
   }
 
@@ -755,41 +765,12 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
       ...[...callerSubs].map(s => `${s}->${sm}`),
     ]);
 
-    for (const [s, el] of Object.entries(boxEls)) {
-      if (relevant.has(s)) {
-        el.classList.remove('dimmed');
-        el.classList.add('focused');
-        for (const u of el.querySelectorAll('.unit-name'))
-          u.classList.remove(...UNIT_CLASSES);
-        for (const u of el.querySelectorAll('.unit-name')) {
-          const uPath = u.dataset.unit;
-          if (uPath === unitPath)            applyUnitClass(u, 'is-selected');
-          else if (calleeUnits.has(uPath))   applyUnitClass(u, 'is-callee');
-          else if (callerUnits.has(uPath))   applyUnitClass(u, 'is-caller');
-          else                               applyUnitClass(u, 'dimmed');
-        }
-      } else {
-        el.classList.add('dimmed');
-        el.classList.remove('focused');
-        for (const u of el.querySelectorAll('.unit-name')) {
-          u.classList.remove(...UNIT_CLASSES);
-          u.classList.add('dimmed');
-        }
-      }
-    }
-
-    for (const [key, el] of Object.entries(arrowEls)) {
-      if (relevantArrows.has(key)) { el.classList.add('visible'); el.classList.remove('dimmed'); }
-      else { el.classList.remove('visible'); el.classList.add('dimmed'); }
-    }
-    for (const [s, syms] of Object.entries(portSymbolEls))
-      for (const el of syms) {
-        const p = el.dataset.partner;
-        if (relevantArrows.has(`${s}->${p}`) || relevantArrows.has(`${p}->${s}`))
-          el.classList.remove('dimmed');
-        else el.classList.add('dimmed');
-      }
-
+    applyHighlighting(relevant, relevantArrows, (_s, uPath) => {
+      if (uPath === unitPath)          return 'is-selected';
+      if (calleeUnits.has(uPath))      return 'is-callee';
+      if (callerUnits.has(uPath))      return 'is-caller';
+      return 'dimmed';
+    });
     showUnitDetail(unitPath, unitData);
   }
 
