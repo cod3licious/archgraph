@@ -2,7 +2,10 @@
 
 ArchGraph turns a plain-text description of your codebase architecture into an interactive dependency graph. You describe your modules, submodules, and units (functions, classes, etc.) in two files — a layer hierarchy in JSON and unit descriptions in Markdown — and ArchGraph processes them into a single `result.json` that a frontend can render as a navigable graph with layer-violation highlighting.
 
-**You can find an example visualization of a made-up e-commerce codebase [here](https://franziskahorn.de/demo_archgraph/) — click around!**
+**You can find an example visualization of a fictional e-commerce codebase [here](https://franziskahorn.de/demo_archgraph/) — click around!** \
+This is based on the descriptions in `example_data/` with 5 modules, 19 submodules, 115 units, and a few intentional layer violations.
+
+While other tools exist to visualize codebases written in a specific programming language, **since ArchGraph operates on plain text descriptions, it is language-agnostic** and can also be used to **visualize your design docs** - which is even more helpful in the era of AI, where you plan more and code less.
 
 ## How it works
 
@@ -160,6 +163,3 @@ Paste the following prompt into your AI agent of choice (Claude, GPT-4, Gemini, 
 > - Do not invent dependencies that do not exist in the actual code.
 >
 > Produce both files in full. Think carefully about the layer ordering before writing `layers.json` — the most common mistake is placing a module too high when it is actually called by others.
-
-
-See `example_data/` for a worked example of a fictional e-commerce platform with 5 modules, 19 submodules, 115 units, and a few intentional layer violations.
