@@ -57,7 +57,7 @@ body {
   white-space: nowrap;
 }
 
-/* Arrow SVG overlay — sits above bands (z:1) but below boxes (z:2) */
+/* Arrows behind symbols, symbols behind boxes */
 #arrow-svg {
   position: absolute;
   top: 0; left: 0;
@@ -66,7 +66,14 @@ body {
   z-index: 1;
 }
 
-/* Submodule boxes */
+#symbol-svg {
+  position: absolute;
+  top: 0; left: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 2;
+}
+
 .submodule-box {
   position: absolute;
   border-radius: 8px;
@@ -75,7 +82,7 @@ body {
   cursor: pointer;
   transition: opacity 0.2s;
   min-width: 120px;
-  z-index: 2;
+  z-index: 3;
 }
 
 .submodule-box:hover { border-color: rgba(0,0,0,0.4); }
@@ -175,7 +182,8 @@ body {
 .unit-name.is-caller   { font-style: italic; }
 
 path.arrow { transition: opacity 0.2s; opacity: 0; }
-path.arrow.visible { opacity: 0.75; }
+path.arrow.visible       { opacity: 0.55; }
+path.arrow.visible.violation { opacity: 1; }
 path.arrow.dimmed  { opacity: 0; }
 
 .port-symbol { transition: opacity 0.2s; }
@@ -187,6 +195,7 @@ path.arrow.dimmed  { opacity: 0; }
   <div id="graph-pane">
     <div id="graph-container">
       <svg id="arrow-svg"></svg>
+      <svg id="symbol-svg"></svg>
     </div>
   </div>
   <div id="resizer"></div>
@@ -444,6 +453,9 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
   const svg = document.getElementById('arrow-svg');
   svg.setAttribute('width',  totalW);
   svg.setAttribute('height', totalH);
+  const symSvg = document.getElementById('symbol-svg');
+  symSvg.setAttribute('width',  totalW);
+  symSvg.setAttribute('height', totalH);
 
 
   // Build edge list (only cross-submodule)
@@ -519,6 +531,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
       items.forEach(({ partner, isOut, valid }, i) => {
         const color = valid ? '#555' : '#c00';
         const t = start + i * SYM_GAP;
+        // Port position: on the box edge (used as arrow endpoint)
         let x, y;
         if      (side === 'top')    { x = pos.x + t;    y = pos.y; }
         else if (side === 'bottom') { x = pos.x + t;    y = pos.y + sz.h; }
@@ -548,7 +561,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
         el.setAttribute('fill', color);
         el.classList.add('port-symbol');
         el.dataset.sm = sm;
-        svg.appendChild(el);
+        symSvg.appendChild(el);
         syms.push(el);
       });
     }
@@ -567,8 +580,9 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
     path.setAttribute('d', bezierPath(p1, p2));
     path.setAttribute('fill', 'none');
     path.setAttribute('stroke', valid ? '#333' : '#c00');
-    path.setAttribute('stroke-width', '1.5');
+    path.setAttribute('stroke-width', '2');
     path.classList.add('arrow');
+    if (!valid) path.classList.add('violation');
     path.dataset.from = from;
     path.dataset.to   = to;
     svg.appendChild(path);
