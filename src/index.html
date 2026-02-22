@@ -221,7 +221,7 @@ fetch('result.json')
   .then(render)
   .catch(err => {
     document.getElementById('graph-container').innerHTML =
-      `<p style="padding:24px;color:#c00">Failed to load result.json: ${err.message}</p>`;
+      `<p style="padding:24px;color:#b03a2e">Failed to load result.json: ${err.message}</p>`;
   });
 
 // ─── Main render ─────────────────────────────────────────────────────────────
@@ -529,7 +529,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
       const start = Math.max(SYM_MARGIN, (edgeLen - totalSpan) / 2);
 
       items.forEach(({ partner, isOut, valid }, i) => {
-        const color = valid ? '#555' : '#c00';
+        const color = valid ? '#555' : '#b03a2e';
         const t = start + i * SYM_GAP;
         // Port position: on the box edge (used as arrow endpoint)
         let x, y;
@@ -561,6 +561,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
         el.setAttribute('fill', color);
         el.classList.add('port-symbol');
         el.dataset.sm = sm;
+        el.dataset.partner = partner;
         symSvg.appendChild(el);
         syms.push(el);
       });
@@ -579,7 +580,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
     const path = svgEl('path');
     path.setAttribute('d', bezierPath(p1, p2));
     path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', valid ? '#333' : '#c00');
+    path.setAttribute('stroke', valid ? '#333' : '#b03a2e');
     path.setAttribute('stroke-width', '2');
     path.classList.add('arrow');
     if (!valid) path.classList.add('violation');
@@ -706,7 +707,9 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
     }
     for (const [s, syms] of Object.entries(portSymbolEls))
       for (const el of syms) {
-        if (relevant.has(s)) el.classList.remove('dimmed');
+        const p = el.dataset.partner;
+        if (relevantArrows.has(`${s}->${p}`) || relevantArrows.has(`${p}->${s}`))
+          el.classList.remove('dimmed');
         else el.classList.add('dimmed');
       }
 
@@ -766,7 +769,9 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
     }
     for (const [s, syms] of Object.entries(portSymbolEls))
       for (const el of syms) {
-        if (relevant.has(s)) el.classList.remove('dimmed');
+        const p = el.dataset.partner;
+        if (relevantArrows.has(`${s}->${p}`) || relevantArrows.has(`${p}->${s}`))
+          el.classList.remove('dimmed');
         else el.classList.add('dimmed');
       }
 
