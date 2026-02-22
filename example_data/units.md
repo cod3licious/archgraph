@@ -1,9 +1,3 @@
-# E-Commerce Platform — Unit Descriptions
-
----
-
-## api.auth
-
 ### api.auth.authenticate_request
 Validates the incoming JWT token from the Authorization header. Calls `@core.cache.get` to check the token blacklist, then verifies the signature and expiry. Raises `AuthError` on failure.
 
@@ -22,9 +16,6 @@ Decorator factory that wraps a route handler and checks that the current user's 
 ### api.auth.refresh_token
 Accepts a valid (non-expired) refresh token, validates it via `@core.cache.get`, issues a new access token via `@api.auth.issue_token`, and revokes the old one via `@api.auth.revoke_token`.
 
----
-
-## api.products
 
 ### api.products.list_products
 HTTP GET handler for `/products`. Parses query parameters (page, page_size, category, sort). Calls `@catalog.search.search_products` and returns a paginated JSON response.
@@ -47,9 +38,6 @@ HTTP GET handler for `/products/{id}/stock`. Calls `@catalog.inventory.get_stock
 ### api.products.update_stock
 HTTP PATCH handler for `/products/{id}/stock`. Calls `@catalog.inventory.set_stock_level`. Requires `catalog:write` scope via `@api.auth.require_scope`.
 
----
-
-## api.orders
 
 ### api.orders.get_cart
 HTTP GET handler for `/cart`. Retrieves the current user's cart via `@orders.cart.get_cart`. Calls `@api.auth.get_current_user` to identify the user.
@@ -72,9 +60,6 @@ HTTP GET handler for `/orders`. Calls `@orders.order_mgmt.list_orders_for_user` 
 ### api.orders.cancel_order
 HTTP POST handler for `/orders/{id}/cancel`. Calls `@orders.order_mgmt.cancel_order` and `@payments.refunds.issue_refund` if a charge was already captured.
 
----
-
-## api.payments
 
 ### api.payments.get_invoice
 HTTP GET handler for `/invoices/{id}`. Calls `@payments.invoicing.get_invoice` and checks ownership via `@api.auth.get_current_user`.
@@ -91,9 +76,6 @@ HTTP POST handler for `/orders/{id}/refund`. Validates the refund request, then 
 ### api.payments.get_payment_status
 HTTP GET handler for `/orders/{id}/payment`. Calls `@payments.gateway.get_charge_status` and returns a normalised status string.
 
----
-
-## catalog.products
 
 ### catalog.products.get_product_by_id
 Loads a single product record from persistent storage. Calls `@core.db.fetch_one` with the products table. Returns `None` if not found.
@@ -116,9 +98,6 @@ Bulk-loads a list of products by id list. Calls `@core.db.fetch_many` with an IN
 ### catalog.products.rebuild_product_index
 Re-indexes all active products into the search cache. Iterates via `@core.db.fetch_many` and calls `@core.cache.set` for each product document.
 
----
-
-## catalog.search
 
 ### catalog.search.search_products
 Full-text search over the product catalog. Checks `@core.cache.get` for a cached result keyed by query hash. On miss, calls `@catalog.products.list_products` with keyword filters and stores the result via `@core.cache.set`.
@@ -138,9 +117,6 @@ Low-level full-text search implementation. Tokenises the query and scores produc
 ### catalog.search.invalidate_search_cache
 Clears all search-related cache keys when product data changes. Calls `@core.cache.delete_pattern`.
 
----
-
-## catalog.pricing
 
 ### catalog.pricing.get_effective_price
 Returns the effective sale price for a product, applying any active promotions. Calls `@catalog.pricing.get_promotions` and `@catalog.inventory.get_stock_level` (to apply low-stock surcharge rules).
@@ -160,9 +136,6 @@ Returns the applicable tax rate for a given country code. Calls `@core.db.fetch_
 ### catalog.pricing.set_base_price
 Updates the base price for a product. Calls `@core.db.execute` and invalidates the pricing cache for that product via `@core.cache.delete_pattern`.
 
----
-
-## catalog.inventory
 
 ### catalog.inventory.get_stock_level
 Returns the current on-hand quantity and reservation count for a product. Calls `@core.db.fetch_one` against the inventory table.
@@ -185,9 +158,6 @@ Removes the inventory record for a deleted product. Calls `@core.db.execute` to 
 ### catalog.inventory.low_stock_products
 Returns products whose on-hand quantity is below their reorder threshold. Calls `@core.db.fetch_many` with a WHERE clause comparing quantity to threshold.
 
----
-
-## orders.cart
 
 ### orders.cart.get_cart
 Loads the active cart for a user. Calls `@core.db.fetch_one` for the cart header and `@core.db.fetch_many` for line items. Returns an assembled `Cart` object.
@@ -213,9 +183,6 @@ Deletes all line items and resets the cart header. Calls `@core.db.execute`. Cal
 ### orders.cart.get_cart_total
 Calculates and returns the cart total. Calls `@catalog.pricing.calculate_cart_total` with the cart's line items.
 
----
-
-## orders.checkout
 
 ### orders.checkout.initiate_checkout
 Orchestrates the checkout flow. Calls `@orders.cart.get_cart`, `@catalog.inventory.commit_reservation`, `@catalog.pricing.calculate_cart_total`, and `@orders.order_repo.create_order`. Returns a pending order id.
@@ -235,9 +202,6 @@ Handles a failed payment during checkout. Calls `@catalog.inventory.release_rese
 ### orders.checkout.get_checkout_summary
 Returns a summary of the pending checkout for display. Calls `@orders.order_repo.find_by_id` and `@catalog.pricing.calculate_cart_total`.
 
----
-
-## orders.order_mgmt
 
 ### orders.order_mgmt.get_order
 Loads a full order with line items. Calls `@orders.order_repo.find_by_id` and enriches with product details from `@catalog.products.get_products_by_ids`.
@@ -257,9 +221,6 @@ Marks the order as shipped and records the tracking number. Calls `@orders.order
 ### orders.order_mgmt.get_order_timeline
 Returns a chronological list of status changes for an order. Calls `@orders.order_repo.find_by_id` and reads the `status_history` JSON column.
 
----
-
-## orders.order_repo
 
 ### orders.order_repo.create_order
 Inserts a new order header and its line items in a single transaction. Calls `@core.db.execute` repeatedly within a db transaction.
@@ -279,9 +240,6 @@ Hard-deletes an order and its line items. Only used in test teardown and admin t
 ### orders.order_repo.find_orders_by_status
 Fetches all orders with a given status, used for background processing queues. Calls `@core.db.fetch_many` with a status filter.
 
----
-
-## payments.gateway
 
 ### payments.gateway.charge
 Initiates a payment charge for a given amount and payment method token. Calls the external payment provider API and stores the result via `@core.db.execute`. Publishes `payment.charged` via `@core.events.publish`.
@@ -301,9 +259,6 @@ Processes inbound payment provider webhook events. Validates the signature, then
 ### payments.gateway.list_charges_for_order
 Returns all charge attempts for a given order id. Calls `@core.db.fetch_many` against the charges table.
 
----
-
-## payments.refunds
 
 ### payments.refunds.issue_refund
 Initiates a refund for a given charge. Calls `@payments.gateway.get_charge_status` to verify the charge is capturable, then calls the provider API and records the result via `@core.db.execute`. Publishes `payment.refunded` via `@core.events.publish`.
@@ -320,9 +275,6 @@ Issues a partial refund for a specific line item amount. Calls `@payments.gatewa
 ### payments.refunds.void_pending_refunds
 Cancels any pending refund records when an order is hard-deleted. Calls `@core.db.execute` to update status to `voided`.
 
----
-
-## payments.invoicing
 
 ### payments.invoicing.generate_invoice
 Creates an invoice record for a completed order. Calls `@core.db.fetch_one` to load the order, `@catalog.pricing.get_tax_rate` for the applicable rate, and `@core.db.execute` to insert the invoice. Also reads the billing user from `@api.auth.get_current_user` to populate the invoice header.
@@ -342,9 +294,6 @@ Sends the invoice PDF to the customer by email. Calls `@payments.invoicing.rende
 ### payments.invoicing.void_invoice
 Marks an invoice as void. Calls `@core.db.execute` to update the status field and publishes `invoice.voided` via `@core.events.publish`.
 
----
-
-## core.db
 
 ### core.db.fetch_one
 Executes a SELECT query expected to return zero or one row. Manages connection acquisition from the pool and row mapping to a dict. Returns `None` on empty result.
@@ -364,9 +313,6 @@ Acquires a raw connection from the pool for advanced use cases. Callers are resp
 ### core.db.health_check
 Runs a lightweight `SELECT 1` to verify database connectivity. Used by the health endpoint and startup probes.
 
----
-
-## core.cache
 
 ### core.cache.get
 Retrieves a value from the cache by key. Returns `None` on miss. Deserialises the stored JSON blob.
@@ -389,9 +335,6 @@ Atomically increments an integer counter stored at a key. Used for rate limiting
 ### core.cache.flush_namespace
 Deletes all keys under a given namespace prefix. Used during integration test teardown.
 
----
-
-## core.email
 
 ### core.email.send
 Sends a transactional email. Accepts `to`, `subject`, `html_body`, and optional `attachments`. Queues the message via the configured provider SDK.
@@ -405,9 +348,6 @@ Renders an email HTML body from a named Jinja2 template and a context dict. Retu
 ### core.email.validate_address
 Validates an email address format and optionally checks the domain's MX record. Returns a boolean.
 
----
-
-## core.events
 
 ### core.events.publish
 Publishes a domain event to the event bus. Accepts an event name and a payload dict. Serialises to JSON and writes to the configured broker topic. Also calls `@orders.order_repo.find_by_id` to enrich order-related events with order metadata before publishing.

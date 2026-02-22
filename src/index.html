@@ -57,12 +57,13 @@ body {
   white-space: nowrap;
 }
 
-/* Arrow SVG overlay */
+/* Arrow SVG overlay — sits above bands (z:1) but below boxes (z:2) */
 #arrow-svg {
   position: absolute;
   top: 0; left: 0;
   pointer-events: none;
   overflow: visible;
+  z-index: 1;
 }
 
 /* Submodule boxes */
@@ -74,6 +75,7 @@ body {
   cursor: pointer;
   transition: opacity 0.2s;
   min-width: 120px;
+  z-index: 2;
 }
 
 .submodule-box:hover { border-color: rgba(0,0,0,0.4); }
@@ -294,26 +296,22 @@ function computeBoxSizes(allSubmodules, submodules) {
 }
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
-// Each root layer row = one horizontal "band"; within a band we tile submodules
-// respecting submodule_layers row ordering (submodule rows placed top-to-bottom
-// within the band, modules side-by-side).
+// Returns layout: { [sm]: { x, y, submodule, rowIdx } }
+// rowIdx is a global vertical-row index used to detect same-row pairs for arrows.
 function computeLayout(layers, allSubmodules, submodules, boxSizes) {
   const layout = {};
   let bandY = PAD_Y;
+  let globalRowIdx = 0;
 
   for (const rootRow of layers.root_layers) {
-    // For each module in this root row, collect its submodule rows
-    const moduleCols = rootRow.map(mod => {
-      if (layers.submodule_layers && layers.submodule_layers[mod]) {
-        return layers.submodule_layers[mod]; // list of lists
-      }
-      return [[mod]]; // single-item
-    });
+    const moduleCols = rootRow.map(mod =>
+      (layers.submodule_layers && layers.submodule_layers[mod])
+        ? layers.submodule_layers[mod]
+        : [[mod]]
+    );
 
-    // Determine how many submodule rows this band needs (max across modules)
     const maxSubRows = Math.max(...moduleCols.map(c => c.length));
 
-    // For each submodule-row level, compute row height = max box height in that level
     const rowHeights = [];
     for (let r = 0; r < maxSubRows; r++) {
       let maxH = 0;
@@ -324,27 +322,23 @@ function computeLayout(layers, allSubmodules, submodules, boxSizes) {
       rowHeights.push(maxH);
     }
 
-    // Assign x positions: modules side by side, submodules within each module
     let colX = PAD_X;
     for (const col of moduleCols) {
-      // Width of this module column = max total width of any submodule row
       let colW = 0;
       for (const subRow of col) {
-        let rowW = 0;
-        for (const sm of subRow) rowW += (boxSizes[sm] || {}).w || 0;
-        rowW += (subRow.length - 1) * BOX_GAP_X;
+        let rowW = subRow.reduce((s, sm) => s + ((boxSizes[sm] || {}).w || 0), 0)
+                 + (subRow.length - 1) * BOX_GAP_X;
         colW = Math.max(colW, rowW);
       }
 
       let subRowY = bandY;
       for (let r = 0; r < col.length; r++) {
         const subRow = col[r];
-        // Center the subrow within the column width
-        const rowW = subRow.reduce((s, sm) => s + (boxSizes[sm] || {}).w || 0, 0)
+        const rowW = subRow.reduce((s, sm) => s + ((boxSizes[sm] || {}).w || 0), 0)
                    + (subRow.length - 1) * BOX_GAP_X;
         let smX = colX + Math.round((colW - rowW) / 2);
         for (const sm of subRow) {
-          layout[sm] = { x: smX, y: subRowY, submodule: sm };
+          layout[sm] = { x: smX, y: subRowY, submodule: sm, rowIdx: globalRowIdx + r };
           smX += (boxSizes[sm] || {}).w + BOX_GAP_X;
         }
         subRowY += rowHeights[r] + BOX_GAP_Y;
@@ -352,6 +346,7 @@ function computeLayout(layers, allSubmodules, submodules, boxSizes) {
       colX += colW + BOX_GAP_X * 2;
     }
 
+    globalRowIdx += maxSubRows;
     const bandH = rowHeights.reduce((s, h) => s + h, 0)
                 + (maxSubRows - 1) * BOX_GAP_Y
                 + BOX_PAD_Y * 2;
@@ -444,7 +439,6 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
   svg.setAttribute('width',  totalW);
   svg.setAttribute('height', totalH);
 
-  // Define arrowhead markers
   const defs = svgEl('defs');
   for (const [id, color] of [['arr-black','#333'], ['arr-red','#c00']]) {
     const marker = svgEl('marker');
@@ -462,49 +456,109 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
   }
   svg.appendChild(defs);
 
-  const arrowEls = {}; // key: "from->to"
-
-  // Pre-compute bidirectional pairs for offset assignment
-  const bidiPairs = new Set();
-  for (const [fromSm, smData] of Object.entries(submodules)) {
-    for (const toSm of Object.keys(smData.dependencies || {})) {
-      if (fromSm !== toSm && (submodules[toSm]?.dependencies || {})[fromSm] !== undefined)
-        bidiPairs.add([fromSm, toSm].sort().join('<->'));
+  // Build edge list (only cross-submodule)
+  const edges = []; // { from, to, valid }
+  for (const [from, smData] of Object.entries(submodules)) {
+    for (const [to, valid] of Object.entries(smData.dependencies || {})) {
+      if (from !== to && layout[from] && layout[to])
+        edges.push({ from, to, valid });
     }
   }
 
-  for (const [fromSm, smData] of Object.entries(submodules)) {
-    for (const [toSm, valid] of Object.entries(smData.dependencies || {})) {
-      if (fromSm === toSm) continue;
-      const fromPos = layout[fromSm];
-      const toPos   = layout[toSm];
-      if (!fromPos || !toPos) continue;
+  // Assign ports ─────────────────────────────────────────────────────────────
+  // For each box and each of its four edges (top/bottom/left/right), collect
+  // the partner boxes using that edge, then sort them by partner center-x
+  // (for top/bottom) or center-y (for left/right) to minimise crossings, and
+  // space the port positions evenly across the edge.
 
-      const fromSz = boxSizes[fromSm];
-      const toSz   = boxSizes[toSm];
-      const color  = valid ? '#333' : '#c00';
-      const markerId = valid ? 'arr-black' : 'arr-red';
+  // port maps: portOut[from][to] = {x,y}, portIn[from][to] = {x,y}
+  const portOut = {}, portIn = {};
+  for (const sm of Object.keys(layout)) { portOut[sm] = {}; portIn[sm] = {}; }
 
-      // Bidirectional arrows get opposite lateral offsets so they don't overlap
-      const bidiKey  = [fromSm, toSm].sort().join('<->');
-      const bidiSign = bidiPairs.has(bidiKey) ? (fromSm < toSm ? 1 : -1) : 0;
+  // Group edges by (box, edge-side)
+  // edge-side: for each directed edge, determine which side of "from" exits and
+  // which side of "to" enters.
+  //   - If rowIdx(from) < rowIdx(to)  → from exits bottom, to enters top
+  //   - If rowIdx(from) > rowIdx(to)  → from exits top,    to enters bottom
+  //   - If same rowIdx               → from exits right/left, to enters left/right
 
-      const d = arrowPath(fromPos, fromSz, toPos, toSz, bidiSign);
+  // outgoing[sm][side] = list of partner sm, sorted by partner cx
+  const outgoing = {}, incoming = {};
+  for (const sm of Object.keys(layout)) {
+    outgoing[sm] = { top: [], bottom: [], left: [], right: [] };
+    incoming[sm] = { top: [], bottom: [], left: [], right: [] };
+  }
 
-      const path = svgEl('path');
-      path.setAttribute('d', d);
-      path.setAttribute('fill', 'none');
-      path.setAttribute('stroke', color);
-      path.setAttribute('stroke-width', '1.5');
-      path.setAttribute('marker-end', `url(#${markerId})`);
-      path.setAttribute('opacity', '0.7');
-      path.classList.add('arrow');
-      path.dataset.from = fromSm;
-      path.dataset.to   = toSm;
-      svg.appendChild(path);
-
-      arrowEls[`${fromSm}->${toSm}`] = path;
+  for (const { from, to } of edges) {
+    const rf = layout[from].rowIdx, rt = layout[to].rowIdx;
+    let fromSide, toSide;
+    if (rf < rt)       { fromSide = 'bottom'; toSide = 'top'; }
+    else if (rf > rt)  { fromSide = 'top';    toSide = 'bottom'; }
+    else {
+      const cf = layout[from].x + boxSizes[from].w / 2;
+      const ct = layout[to].x   + boxSizes[to].w   / 2;
+      fromSide = cf <= ct ? 'right' : 'left';
+      toSide   = cf <= ct ? 'left'  : 'right';
     }
+    outgoing[from][fromSide].push(to);
+    incoming[to][toSide].push(from);
+  }
+
+  // Sort each group by partner center-x (for top/bottom) or center-y (left/right)
+  // then assign evenly-spaced ports along the edge.
+  function assignPorts(sm, side, partners, isOutgoing) {
+    const pos = layout[sm], sz = boxSizes[sm];
+    const cx = p => layout[p].x + boxSizes[p].w / 2;
+    const cy = p => layout[p].y + boxSizes[p].h / 2;
+
+    const sorted = [...partners].sort((a, b) =>
+      (side === 'left' || side === 'right') ? cy(a) - cy(b) : cx(a) - cx(b)
+    );
+
+    const n = sorted.length;
+    sorted.forEach((partner, i) => {
+      const t = (i + 1) / (n + 1); // fraction along edge, avoids corners
+      let px, py;
+      if      (side === 'top')    { px = pos.x + sz.w * t; py = pos.y; }
+      else if (side === 'bottom') { px = pos.x + sz.w * t; py = pos.y + sz.h; }
+      else if (side === 'left')   { px = pos.x;             py = pos.y + sz.h * t; }
+      else                        { px = pos.x + sz.w;      py = pos.y + sz.h * t; }
+
+      if (isOutgoing) portOut[sm][partner] = { x: px, y: py, side };
+      else            portIn[sm][partner]  = { x: px, y: py, side };
+    });
+  }
+
+  for (const sm of Object.keys(layout)) {
+    for (const side of ['top', 'bottom', 'left', 'right']) {
+      if (outgoing[sm][side].length) assignPorts(sm, side, outgoing[sm][side], true);
+      if (incoming[sm][side].length) assignPorts(sm, side, incoming[sm][side], false);
+    }
+  }
+
+  // Draw edges ───────────────────────────────────────────────────────────────
+  const arrowEls = {};
+  for (const { from, to, valid } of edges) {
+    const p1 = portOut[from][to];
+    const p2 = portIn[to][from];
+    if (!p1 || !p2) continue;
+
+    const color    = valid ? '#333' : '#c00';
+    const markerId = valid ? 'arr-black' : 'arr-red';
+    const d = bezierPath(p1, p2);
+
+    const path = svgEl('path');
+    path.setAttribute('d', d);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', color);
+    path.setAttribute('stroke-width', '1.5');
+    path.setAttribute('marker-end', `url(#${markerId})`);
+    path.setAttribute('opacity', '0.7');
+    path.classList.add('arrow');
+    path.dataset.from = from;
+    path.dataset.to   = to;
+    svg.appendChild(path);
+    arrowEls[`${from}->${to}`] = path;
   }
 
   return arrowEls;
@@ -514,44 +568,24 @@ function svgEl(tag) {
   return document.createElementNS('http://www.w3.org/2000/svg', tag);
 }
 
-// Compute a bezier arrow path from fromBox to toBox.
-// bidiSign: 0 = no offset, +1/-1 = lateral offset direction for bidi pairs
-function arrowPath(fromPos, fromSz, toPos, toSz, bidiSign) {
-  const BIDI_OFFSET = 12;
+// Cubic bezier between two ports; control-point direction follows the port's side.
+// Both outgoing (p1) and incoming (p2) control points extend outward from the box face.
+function bezierPath(p1, p2) {
+  const dist = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
+  const cp   = Math.max(40, dist * 0.45);
 
-  const fromCX = fromPos.x + fromSz.w / 2;
-  const fromCY = fromPos.y + fromSz.h / 2;
-  const toCX   = toPos.x + toSz.w / 2;
-  const toCY   = toPos.y + toSz.h / 2;
-  const dx = toCX - fromCX;
-  const dy = toCY - fromCY;
+  // Outward tangent vector for a given side
+  const tangent = side => {
+    if (side === 'bottom') return [0,  cp];
+    if (side === 'top')    return [0, -cp];
+    if (side === 'right')  return [ cp, 0];
+    /* left */             return [-cp, 0];
+  };
 
-  let x1, y1, x2, y2, cpx1, cpy1, cpx2, cpy2;
-  const off = bidiSign * BIDI_OFFSET;
+  const [dx1, dy1] = tangent(p1.side);
+  const [dx2, dy2] = tangent(p2.side); // also outward: cp2 sits outside p2's face
 
-  if (Math.abs(dy) >= Math.abs(dx)) {
-    // Mostly vertical: exit bottom/top, offset horizontally
-    const goDown = dy > 0;
-    x1 = fromPos.x + fromSz.w * 0.5 + off;
-    y1 = goDown ? fromPos.y + fromSz.h : fromPos.y;
-    x2 = toPos.x + toSz.w * 0.5 + off;
-    y2 = goDown ? toPos.y : toPos.y + toSz.h;
-    const cp = Math.abs(dy) * 0.45;
-    cpx1 = x1; cpy1 = y1 + (goDown ? cp : -cp);
-    cpx2 = x2; cpy2 = y2 + (goDown ? -cp : cp);
-  } else {
-    // Mostly horizontal: exit right/left, offset vertically
-    const goRight = dx > 0;
-    x1 = goRight ? fromPos.x + fromSz.w : fromPos.x;
-    y1 = fromPos.y + fromSz.h * 0.5 + off;
-    x2 = goRight ? toPos.x : toPos.x + toSz.w;
-    y2 = toPos.y + toSz.h * 0.5 + off;
-    const cp = Math.abs(dx) * 0.45;
-    cpx1 = x1 + (goRight ? cp : -cp); cpy1 = y1;
-    cpx2 = x2 + (goRight ? -cp : cp); cpy2 = y2;
-  }
-
-  return `M${x1},${y1} C${cpx1},${cpy1} ${cpx2},${cpy2} ${x2},${y2}`;
+  return `M${p1.x},${p1.y} C${p1.x+dx1},${p1.y+dy1} ${p2.x+dx2},${p2.y+dy2} ${p2.x},${p2.y}`;
 }
 
 // ─── Interactions ─────────────────────────────────────────────────────────────
@@ -576,8 +610,13 @@ function wireInteractions(boxEls, arrowEls, submodules, units, layout, boxSizes)
     selection = { type: 'submodule', id: sm };
     const deps = Object.keys(submodules[sm]?.dependencies || {});
     const relevant = new Set([sm, ...deps]);
-    const relevantArrows = new Set(
-      deps.map(d => `${sm}->${d}`)
+    const relevantArrows = new Set(deps.map(d => `${sm}->${d}`));
+
+    // Collect the exact unit paths referenced by any unit in this submodule
+    const referencedUnits = new Set(
+      (submodules[sm]?.units || []).flatMap(name =>
+        Object.keys(units[`${sm}.${name}`]?.dependencies || {})
+      )
     );
 
     for (const [s, el] of Object.entries(boxEls)) {
@@ -585,20 +624,18 @@ function wireInteractions(boxEls, arrowEls, submodules, units, layout, boxSizes)
         el.classList.remove('dimmed');
         el.classList.add('focused');
         for (const u of el.querySelectorAll('.unit-name')) {
-          if (s === sm || relevant.has(u.dataset.sm)) {
-            u.classList.remove('dimmed');
-            u.classList.add('bold');
-          } else {
-            u.classList.add('dimmed');
-            u.classList.remove('bold');
-          }
+          // Bold all units in the selected submodule itself, and only the
+          // specifically referenced units in dependent submodules
+          const bold = s === sm || referencedUnits.has(u.dataset.unit);
+          u.classList.toggle('bold', bold);
+          u.classList.toggle('dimmed', !bold);
         }
       } else {
         el.classList.add('dimmed');
         el.classList.remove('focused');
         for (const u of el.querySelectorAll('.unit-name')) {
-          u.classList.add('dimmed');
           u.classList.remove('bold');
+          u.classList.add('dimmed');
         }
       }
     }
