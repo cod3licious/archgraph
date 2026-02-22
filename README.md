@@ -10,7 +10,7 @@ ArchGraph turns a plain-text description of your codebase architecture into an i
 
 3. **`prepare.py`** — reads both files, resolves all dependencies, validates them against the layer hierarchy, and writes `result.json`.
 
-4. **Frontend** *(coming soon)* — reads `result.json` and renders the interactive graph in the browser.
+4. **Frontend** — reads `result.json` and renders the interactive graph in the browser.
 
 ## Project structure
 
@@ -21,7 +21,9 @@ archgraph/
 │   └── units.md          # example e-commerce unit descriptions
 └── src/
     ├── prepare.py        # data processing pipeline
-    └── test_prepare.py   # unit tests
+    ├── test_prepare.py   # unit tests
+    ├── result.json       # output of prepare.py (read by the frontend)
+    └── index.html        # interactive graph visualization
 ```
 
 ## Running the data pipeline
@@ -48,9 +50,9 @@ Output is written to `src/result.json`.
 uv run pytest src/
 ```
 
-## Running the frontend *(coming soon)*
+## Running the frontend
 
-Once the frontend is implemented, open `src/index.html` in a browser (or serve it with any static file server). It will read `result.json` from the same directory and render the graph.
+Open `src/index.html` in a browser served by any static file server. It will read `result.json` from the same directory and render the graph.
 
 ```bash
 # simple local server, no installation required
@@ -58,7 +60,14 @@ python -m http.server 8000 --directory src
 # then open http://localhost:8000
 ```
 
----
+## How I created this project with AI
+
+I'm not coding a lot by hand these days. However, I still very much care about well-designed software. For this, I follow my Clarity-Driven Development approach, further detailed in [this article](https://franziskahorn.de/articles/2026-01-cdd-humans-ai), where you first think about the Why, What, and How of the software you want to build and summarize your results in sketch documents like [`sketch.md`](sketch.md) in this repository.
+
+After some minor refinements of the documents based on Claude's comments, I implemented the project step by step together with Claude Agent inside the [Zed IDE](https://zed.dev/). We started with the tests, then moved on to the python script, and finally implemented the frontend. 
+
+The main implementation took one weekend with 1.5 days spent on creating the sketch document and then a few hours instructing and watching Claude generate the code.
+
 
 ## Using ArchGraph with your own codebase
 
