@@ -1,3 +1,4 @@
+import logging
 import re
 from copy import deepcopy
 
@@ -59,10 +60,10 @@ Calls `@db.queries.sample.get_samples` to kick off the pipeline.
 """
 
 
-def _capture(fn, *args, capsys, **kwargs):
-    result = fn(*args, **kwargs)
-    out = capsys.readouterr().out
-    return result, out
+def _capture(fn, *args, caplog, **kwargs):
+    with caplog.at_level(logging.DEBUG, logger="prepare"):
+        result = fn(*args, **kwargs)
+    return result, caplog
 
 
 def _make_units(deps_map: dict) -> dict:
@@ -282,49 +283,49 @@ def test_flatten_empty_submodule_layers():
 ALL_SM = ["api.routes", "db.commands"]
 
 
-def test_validate_all_valid(capsys):
+def test_validate_all_valid(caplog):
     units = {"api.routes.f": {"submodule": "api.routes", "name": "f", "description": "", "dependencies": {}}}
-    result, out = _capture(validate_unit_paths, units, ALL_SM, capsys=capsys)
+    result, caplog = _capture(validate_unit_paths, units, ALL_SM, caplog=caplog)
     assert result is True
-    assert "[ERROR]" not in out
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
 
 
-def test_validate_unit_is_submodule(capsys):
+def test_validate_unit_is_submodule(caplog):
     units = {"api.routes": {"submodule": "api", "name": "routes", "description": "", "dependencies": {}}}
-    result, out = _capture(validate_unit_paths, units, ALL_SM, capsys=capsys)
+    result, caplog = _capture(validate_unit_paths, units, ALL_SM, caplog=caplog)
     assert result is False
-    assert "[ERROR] Unit Is Submodule: api.routes" in out
+    assert "Unit Is Submodule: api.routes" in caplog.text
 
 
-def test_validate_unknown_submodule(capsys):
+def test_validate_unknown_submodule(caplog):
     units = {"unknown.mod.f": {"submodule": "unknown.mod", "name": "f", "description": "", "dependencies": {}}}
-    result, out = _capture(validate_unit_paths, units, ALL_SM, capsys=capsys)
+    result, caplog = _capture(validate_unit_paths, units, ALL_SM, caplog=caplog)
     assert result is False
-    assert "[ERROR] Unknown Submodule: unknown.mod.f" in out
+    assert "Unknown Submodule: unknown.mod.f" in caplog.text
 
 
-def test_validate_multiple_errors_returns_false(capsys):
+def test_validate_multiple_errors_returns_false(caplog):
     units = {
         "api.routes": {"submodule": "api", "name": "routes", "description": "", "dependencies": {}},
         "bad.mod.f": {"submodule": "bad.mod", "name": "f", "description": "", "dependencies": {}},
     }
-    result, _ = _capture(validate_unit_paths, units, ALL_SM, capsys=capsys)
+    result, _ = _capture(validate_unit_paths, units, ALL_SM, caplog=caplog)
     assert result is False
 
 
-def test_validate_empty_units_valid(capsys):
-    result, _ = _capture(validate_unit_paths, {}, ALL_SM, capsys=capsys)
+def test_validate_empty_units_valid(caplog):
+    result, _ = _capture(validate_unit_paths, {}, ALL_SM, caplog=caplog)
     assert result is True
 
 
-def test_validate_both_errors_logged(capsys):
+def test_validate_both_errors_logged(caplog):
     units = {
         "api.routes": {"submodule": "api", "name": "routes", "description": "", "dependencies": {}},
         "bad.mod.f": {"submodule": "bad.mod", "name": "f", "description": "", "dependencies": {}},
     }
-    _, out = _capture(validate_unit_paths, units, ALL_SM, capsys=capsys)
-    assert "[ERROR] Unit Is Submodule: api.routes" in out
-    assert "[ERROR] Unknown Submodule: bad.mod.f" in out
+    _, caplog = _capture(validate_unit_paths, units, ALL_SM, caplog=caplog)
+    assert "Unit Is Submodule: api.routes" in caplog.text
+    assert "Unknown Submodule: bad.mod.f" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -332,12 +333,12 @@ def test_validate_both_errors_logged(capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_create_submodules_basic_structure(capsys):
+def test_create_submodules_basic_structure(caplog):
     result, _ = _capture(
         create_submodules_dict,
         ["api.routes", "db.commands"],
         {"api.routes": ["get_samples"], "db.commands": ["create_predictions"]},
-        capsys=capsys,
+        caplog=caplog,
     )
     sm = result["api.routes"]
     assert sm["module"] == "api"
@@ -348,40 +349,40 @@ def test_create_submodules_basic_structure(capsys):
     assert "name" not in sm
 
 
-def test_create_submodules_top_level_module_no_dot(capsys):
-    result, _ = _capture(create_submodules_dict, ["main"], {"main": ["run"]}, capsys=capsys)
+def test_create_submodules_top_level_module_no_dot(caplog):
+    result, _ = _capture(create_submodules_dict, ["main"], {"main": ["run"]}, caplog=caplog)
     assert result["main"]["module"] == "main"
 
 
-def test_create_submodules_missing_units_warns(capsys):
-    _, out = _capture(create_submodules_dict, ["api.routes"], {}, capsys=capsys)
-    assert "[WARNING]" in out
-    assert "api.routes" in out
+def test_create_submodules_missing_units_warns(caplog):
+    _, caplog = _capture(create_submodules_dict, ["api.routes"], {}, caplog=caplog)
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert "api.routes" in caplog.text
 
 
-def test_create_submodules_order_preserved(capsys):
-    result, _ = _capture(create_submodules_dict, ["a.x", "b.y", "c.z"], {}, capsys=capsys)
+def test_create_submodules_order_preserved(caplog):
+    result, _ = _capture(create_submodules_dict, ["a.x", "b.y", "c.z"], {}, caplog=caplog)
     assert list(result.keys()) == ["a.x", "b.y", "c.z"]
 
 
-def test_create_submodules_empty(capsys):
-    result, _ = _capture(create_submodules_dict, [], {}, capsys=capsys)
+def test_create_submodules_empty(caplog):
+    result, _ = _capture(create_submodules_dict, [], {}, caplog=caplog)
     assert result == {}
 
 
-def test_create_submodules_units_are_short_names(capsys):
+def test_create_submodules_units_are_short_names(caplog):
     # unit_order contains short names; they should pass through unchanged
     result, _ = _capture(
         create_submodules_dict,
         ["core.common"],
         {"core.common": ["preprocess", "load_data"]},
-        capsys=capsys,
+        caplog=caplog,
     )
     assert result["core.common"]["units"] == ["preprocess", "load_data"]
 
 
-def test_create_submodules_empty_unit_list_for_missing_submodule(capsys):
-    result, _ = _capture(create_submodules_dict, ["api.routes"], {}, capsys=capsys)
+def test_create_submodules_empty_unit_list_for_missing_submodule(caplog):
+    result, _ = _capture(create_submodules_dict, ["api.routes"], {}, caplog=caplog)
     assert result["api.routes"]["units"] == []
 
 
@@ -448,68 +449,68 @@ def test_colors_all_modules_in_rainbow_order_differ():
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_valid_dep_kept(capsys):
+def test_resolve_valid_dep_kept(caplog):
     units = _make_units({"a.b.f": ["a.b.g"], "a.b.g": []})
-    result, _ = _capture(resolve_dependencies, units, capsys=capsys)
+    result, _ = _capture(resolve_dependencies, units, caplog=caplog)
     assert "a.b.g" in result["a.b.f"]["dependencies"]
 
 
-def test_resolve_self_dep_removed(capsys):
+def test_resolve_self_dep_removed(caplog):
     units = _make_units({"a.b.f": ["a.b.f"]})
-    result, _ = _capture(resolve_dependencies, units, capsys=capsys)
+    result, _ = _capture(resolve_dependencies, units, caplog=caplog)
     assert "a.b.f" not in result["a.b.f"]["dependencies"]
 
 
-def test_resolve_subunit_matched_to_parent(capsys):
+def test_resolve_subunit_matched_to_parent(caplog):
     units = _make_units({"a.b.f": ["a.b.Model.predict"], "a.b.Model": []})
-    result, out = _capture(resolve_dependencies, units, capsys=capsys)
+    result, caplog = _capture(resolve_dependencies, units, caplog=caplog)
     assert "a.b.Model" in result["a.b.f"]["dependencies"]
-    assert "[WARNING]" in out
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
 
 
-def test_resolve_unknown_dep_removed(capsys):
+def test_resolve_unknown_dep_removed(caplog):
     units = _make_units({"a.b.f": ["x.y.z"]})
-    result, out = _capture(resolve_dependencies, units, capsys=capsys)
+    result, caplog = _capture(resolve_dependencies, units, caplog=caplog)
     assert "x.y.z" not in result["a.b.f"]["dependencies"]
-    assert "[ERROR] Referenced Unit Unknown" in out
+    assert "Referenced Unit Unknown" in caplog.text
 
 
-def test_resolve_error_count_in_summary(capsys):
+def test_resolve_error_count_in_summary(caplog):
     units = _make_units({"a.b.f": ["x.y.z", "p.q.r"]})
-    _, out = _capture(resolve_dependencies, units, capsys=capsys)
-    assert "2 error(s)" in out
+    _, caplog = _capture(resolve_dependencies, units, caplog=caplog)
+    assert "2 error(s)" in caplog.text
 
 
-def test_resolve_zero_errors_summary(capsys):
+def test_resolve_zero_errors_summary(caplog):
     units = _make_units({"a.b.f": []})
-    _, out = _capture(resolve_dependencies, units, capsys=capsys)
-    assert "0 error(s)" in out
+    _, caplog = _capture(resolve_dependencies, units, caplog=caplog)
+    assert "0 error(s)" in caplog.text
 
 
-def test_resolve_does_not_modify_original(capsys):
+def test_resolve_does_not_modify_original(caplog):
     units = _make_units({"a.b.f": ["x.y.z"]})
     original = deepcopy(units)
-    _capture(resolve_dependencies, units, capsys=capsys)
+    _capture(resolve_dependencies, units, caplog=caplog)
     assert units == original
 
 
-def test_resolve_subunit_match_deduplicates(capsys):
+def test_resolve_subunit_match_deduplicates(caplog):
     units = _make_units({"a.b.f": ["a.b.Model.fit", "a.b.Model.predict"], "a.b.Model": []})
-    result, _ = _capture(resolve_dependencies, units, capsys=capsys)
+    result, _ = _capture(resolve_dependencies, units, caplog=caplog)
     keys = list(result["a.b.f"]["dependencies"].keys())
     assert keys.count("a.b.Model") == 1
 
 
-def test_resolve_valid_dep_stays_true(capsys):
+def test_resolve_valid_dep_stays_true(caplog):
     units = _make_units({"a.b.f": ["a.b.g"], "a.b.g": []})
-    result, _ = _capture(resolve_dependencies, units, capsys=capsys)
+    result, _ = _capture(resolve_dependencies, units, caplog=caplog)
     assert result["a.b.f"]["dependencies"]["a.b.g"] is True
 
 
-def test_resolve_self_dep_not_counted_as_error(capsys):
+def test_resolve_self_dep_not_counted_as_error(caplog):
     units = _make_units({"a.b.f": ["a.b.f"]})
-    _, out = _capture(resolve_dependencies, units, capsys=capsys)
-    assert "0 error(s)" in out
+    _, caplog = _capture(resolve_dependencies, units, caplog=caplog)
+    assert "0 error(s)" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -524,85 +525,85 @@ def _violation_units(unit_a, sm_a, dep_b, sm_b):
     }
 
 
-def test_check_valid_cross_module_dep(capsys):
+def test_check_valid_cross_module_dep(caplog):
     units = _violation_units("api.routes.f", "api.routes", "db.commands.g", "db.commands")
-    result, _ = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert result["api.routes.f"]["dependencies"]["db.commands.g"] is True
 
 
-def test_check_invalid_upward_dep(capsys):
+def test_check_invalid_upward_dep(caplog):
     units = _violation_units("db.commands.g", "db.commands", "api.routes.f", "api.routes")
-    result, out = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    result, caplog = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert result["db.commands.g"]["dependencies"]["api.routes.f"] is False
-    assert "[WARNING] Architecture Validation" in out
+    assert "Architecture Validation" in caplog.text
 
 
-def test_check_invalid_same_root_layer_different_module(capsys):
+def test_check_invalid_same_root_layer_different_module(caplog):
     units = _violation_units("main.run", "main", "api.routes.f", "api.routes")
-    result, _ = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert result["main.run"]["dependencies"]["api.routes.f"] is False
 
 
-def test_check_valid_intra_module_downward(capsys):
+def test_check_valid_intra_module_downward(caplog):
     units = _violation_units("db.commands.g", "db.commands", "db.queries.sample.f", "db.queries.sample")
-    result, _ = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert result["db.commands.g"]["dependencies"]["db.queries.sample.f"] is True
 
 
-def test_check_invalid_intra_module_upward(capsys):
+def test_check_invalid_intra_module_upward(caplog):
     units = _violation_units("db.queries.sample.f", "db.queries.sample", "db.commands.g", "db.commands")
-    result, _ = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert result["db.queries.sample.f"]["dependencies"]["db.commands.g"] is False
 
 
-def test_check_invalid_same_intra_layer_siblings(capsys):
+def test_check_invalid_same_intra_layer_siblings(caplog):
     units = _violation_units(
         "db.queries.sample.f",
         "db.queries.sample",
         "db.queries.config.g",
         "db.queries.config",
     )
-    result, _ = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert result["db.queries.sample.f"]["dependencies"]["db.queries.config.g"] is False
 
 
-def test_check_same_submodule_always_allowed(capsys):
+def test_check_same_submodule_always_allowed(caplog):
     units = _violation_units("db.commands.f", "db.commands", "db.commands.g", "db.commands")
-    result, _ = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert result["db.commands.f"]["dependencies"]["db.commands.g"] is True
 
 
-def test_check_does_not_modify_original(capsys):
+def test_check_does_not_modify_original(caplog):
     units = _violation_units("db.commands.g", "db.commands", "api.routes.f", "api.routes")
     original = deepcopy(units)
-    _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert units == original
 
 
-def test_check_core_cannot_depend_on_higher(capsys):
+def test_check_core_cannot_depend_on_higher(caplog):
     units = _violation_units("core.common.f", "core.common", "db.commands.g", "db.commands")
-    result, _ = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert result["core.common.f"]["dependencies"]["db.commands.g"] is False
 
 
-def test_check_lower_module_can_depend_on_same_lower_layer(capsys):
+def test_check_lower_module_can_depend_on_same_lower_layer(caplog):
     # core.optimization and core.prediction are siblings — neither can depend on the other
     units = _violation_units("core.optimization.f", "core.optimization", "core.prediction.g", "core.prediction")
-    result, _ = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert result["core.optimization.f"]["dependencies"]["core.prediction.g"] is False
 
 
-def test_check_lower_submodule_can_depend_on_lower_submodule(capsys):
+def test_check_lower_submodule_can_depend_on_lower_submodule(caplog):
     # core.optimization and core.common: core.common is in a lower layer
     units = _violation_units("core.optimization.f", "core.optimization", "core.common.g", "core.common")
-    result, _ = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert result["core.optimization.f"]["dependencies"]["core.common.g"] is True
 
 
-def test_check_cross_module_lower_to_higher_invalid(capsys):
+def test_check_cross_module_lower_to_higher_invalid(caplog):
     # core (bottom) -> api (top): invalid
     units = _violation_units("core.common.f", "core.common", "api.routes.g", "api.routes")
-    result, _ = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
+    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
     assert result["core.common.f"]["dependencies"]["api.routes.g"] is False
 
 
@@ -688,8 +689,8 @@ def test_assign_intra_submodule_deps_skipped():
 # ---------------------------------------------------------------------------
 
 
-def test_process_full_pipeline_structure(capsys):
-    result, _ = _capture(process_files, UNITS_MD, LAYERS, capsys=capsys)
+def test_process_full_pipeline_structure(caplog):
+    result, _ = _capture(process_files, UNITS_MD, LAYERS, caplog=caplog)
     assert "layers" in result
     assert "submodules" in result
     assert "units" in result
@@ -697,50 +698,50 @@ def test_process_full_pipeline_structure(capsys):
     assert "api.routes.get_samples" in result["units"]
 
 
-def test_process_layers_preserved(capsys):
-    result, _ = _capture(process_files, UNITS_MD, LAYERS, capsys=capsys)
+def test_process_layers_preserved(caplog):
+    result, _ = _capture(process_files, UNITS_MD, LAYERS, caplog=caplog)
     assert result["layers"] == LAYERS
 
 
-def test_process_validation_failure_raises(capsys):
+def test_process_validation_failure_raises(caplog):
     md = "### nonexistent.module.f\n\nhello"
     with pytest.raises(ValueError):
-        _capture(process_files, md, LAYERS, capsys=capsys)
+        _capture(process_files, md, LAYERS, caplog=caplog)
 
 
-def test_process_colors_assigned_not_grey(capsys):
-    result, _ = _capture(process_files, UNITS_MD, LAYERS, capsys=capsys)
+def test_process_colors_assigned_not_grey(caplog):
+    result, _ = _capture(process_files, UNITS_MD, LAYERS, caplog=caplog)
     for sm in result["submodules"].values():
         assert sm["color"] != "#D3D3D3"
 
 
-def test_process_violation_detected(capsys):
+def test_process_violation_detected(caplog):
     md = UNITS_MD + "\n### core.common.bad\n\nCalls `@api.routes.get_samples`."
-    result, _ = _capture(process_files, md, LAYERS, capsys=capsys)
+    result, _ = _capture(process_files, md, LAYERS, caplog=caplog)
     assert result["units"]["core.common.bad"]["dependencies"].get("api.routes.get_samples") is False
 
 
-def test_process_self_dep_removed(capsys):
+def test_process_self_dep_removed(caplog):
     layers = {"root_layers": [["api"]], "submodule_layers": {"api": [["api.routes"]]}}
     md = "### api.routes.f\n\nCalls `@api.routes.f`."
-    result, _ = _capture(process_files, md, layers, capsys=capsys)
+    result, _ = _capture(process_files, md, layers, caplog=caplog)
     assert "api.routes.f" not in result["units"]["api.routes.f"]["dependencies"]
 
 
-def test_process_submodule_colors_same_module(capsys):
-    result, _ = _capture(process_files, UNITS_MD, LAYERS, capsys=capsys)
+def test_process_submodule_colors_same_module(caplog):
+    result, _ = _capture(process_files, UNITS_MD, LAYERS, caplog=caplog)
     db_sms = [sm for sm in result["submodules"].values() if sm["module"] == "db"]
     colors = {sm["color"] for sm in db_sms}
     assert len(colors) == 1
 
 
-def test_process_submodule_units_are_short_names(capsys):
-    result, _ = _capture(process_files, UNITS_MD, LAYERS, capsys=capsys)
+def test_process_submodule_units_are_short_names(caplog):
+    result, _ = _capture(process_files, UNITS_MD, LAYERS, caplog=caplog)
     assert result["submodules"]["api.routes"]["units"] == ["get_samples", "delete_config"]
 
 
-def test_process_submodule_deps_are_submodule_keys(capsys):
-    result, _ = _capture(process_files, UNITS_MD, LAYERS, capsys=capsys)
+def test_process_submodule_deps_are_submodule_keys(caplog):
+    result, _ = _capture(process_files, UNITS_MD, LAYERS, caplog=caplog)
     # all dependency keys in submodules must themselves be submodule paths
     all_sm_keys = set(result["submodules"].keys())
     for sm_path, sm in result["submodules"].items():
@@ -748,8 +749,8 @@ def test_process_submodule_deps_are_submodule_keys(capsys):
             assert dep_key in all_sm_keys, f"{sm_path} has dep key {dep_key!r} not in submodules"
 
 
-def test_process_unit_deps_are_unit_keys(capsys):
-    result, _ = _capture(process_files, UNITS_MD, LAYERS, capsys=capsys)
+def test_process_unit_deps_are_unit_keys(caplog):
+    result, _ = _capture(process_files, UNITS_MD, LAYERS, caplog=caplog)
     all_unit_keys = set(result["units"].keys())
     for unit_path, unit in result["units"].items():
         for dep_key in unit["dependencies"]:

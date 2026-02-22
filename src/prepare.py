@@ -1,8 +1,11 @@
 import colorsys
 import json
+import logging
 import re
 from copy import deepcopy
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def parse_unit_descriptions(unit_descriptions: str) -> tuple[dict, dict]:
@@ -14,10 +17,7 @@ def parse_unit_descriptions(unit_descriptions: str) -> tuple[dict, dict]:
     units: dict[str, dict] = {}
     unit_order: dict[str, list[str]] = {}
 
-    for section in re.split(r"^### ", unit_descriptions, flags=re.MULTILINE):
-        if not section.strip():
-            continue
-        header, _, body = section.partition("\n")
+    for header, body in re.findall(r"^### ([^\n]+)\n(.*?)(?=^### |\Z)", unit_descriptions, flags=re.MULTILINE | re.DOTALL):
         unit_path = header.strip()
         description = body.strip()
 
@@ -83,13 +83,14 @@ def validate_unit_paths(units: dict, all_submodules: list[str]) -> bool:
     valid = True
     for unit_path, unit in units.items():
         if unit_path in submodule_set:
-            print(
-                f"[ERROR] Unit Is Submodule: {unit_path}: a unit is supposed to be "
-                f"contained in a submodule (like a function or class), not be the submodule itself"
+            logger.error(
+                "Unit Is Submodule: %s: a unit is supposed to be contained in a submodule "
+                "(like a function or class), not be the submodule itself",
+                unit_path,
             )
             valid = False
         elif unit["submodule"] not in submodule_set:
-            print(f"[ERROR] Unknown Submodule: {unit_path} is not part of any submodule in the provided architectural layers")
+            logger.error("Unknown Submodule: %s is not part of any submodule in the provided architectural layers", unit_path)
             valid = False
     return valid
 
@@ -104,7 +105,7 @@ def create_submodules_dict(all_submodules: list[str], unit_order: dict) -> dict:
     for sm in all_submodules:
         units_list = unit_order.get(sm, [])
         if not units_list:
-            print(f"[WARNING] Submodule {sm} has no units")
+            logger.warning("Submodule %s has no units", sm)
         submodules[sm] = {
             "module": sm.split(".")[0],
             "color": "#D3D3D3",
@@ -162,14 +163,14 @@ def resolve_dependencies(units: dict) -> dict:
                 # Try stripping the last segment (e.g. Model.predict → Model)
                 parent = dep.rsplit(".", 1)[0] if "." in dep else None
                 if parent and parent in unit_paths:
-                    print(f"[WARNING] {unit_path} dependency {dep} was matched to {parent}")
+                    logger.warning("%s dependency %s was matched to %s", unit_path, dep, parent)
                     resolved.setdefault(parent, True)  # deduplicates multiple sub-refs
                 else:
-                    print(f"[ERROR] Referenced Unit Unknown: {unit_path} depends on {dep}, which could not be resolved")
+                    logger.error("Referenced Unit Unknown: %s depends on %s, which could not be resolved", unit_path, dep)
                     error_count += 1
         unit["dependencies"] = resolved
 
-    print(f"Dependency resolution completed with {error_count} error(s)")
+    logger.info("Dependency resolution completed with %d error(s)", error_count)
     return result
 
 
@@ -231,7 +232,7 @@ def check_layer_violations(units: dict, layers: dict) -> dict:
             rr_b, ir_b, root_b = info_b
             allowed = rr_b > rr_a or (rr_b == rr_a and root_a == root_b and ir_b > ir_a)
             if not allowed:
-                print(f"[WARNING] Architecture Validation: {unit_path} must not depend on {dep_path}")
+                logger.warning("Architecture Validation: %s must not depend on %s", unit_path, dep_path)
                 unit["dependencies"][dep_path] = False
 
     return result
@@ -280,6 +281,8 @@ if __name__ == "__main__":
     import argparse
     import sys
 
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
     parser = argparse.ArgumentParser(description="Process architecture files into result.json")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--input", metavar="FOLDER", help="Folder containing layers.json and units.md")
@@ -301,9 +304,9 @@ if __name__ == "__main__":
     try:
         result = process_files(unit_descriptions, layers_data)
     except ValueError as e:
-        print(f"[FATAL] {e}", file=sys.stderr)
+        logger.critical("%s", e)
         sys.exit(1)
 
     output_path = Path(__file__).parent / "result.json"
     output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Saved result to {output_path}")
+    logger.info("Saved result to %s", output_path)
