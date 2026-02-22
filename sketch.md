@@ -81,6 +81,7 @@ The order of the units in this file does not have to correspond to the submodule
 Let's describe the `prepare.py` script's functions in a similar manner:
 
 ---
+
 ### prepare.__main__
 
 The script's normal `__main__` function, which parses the commandline arguments, reads the files from the given paths (transforming the JSON into a dict and reading the markdown file as a string), calls `@process_files`, and saves the returned result as `result.json` (in the same folder as the script and `index.html`, independent from where the script was called).
@@ -174,6 +175,8 @@ Gets the `submodules` dict and the (updated) `units` dict (after `check_layer_vi
 
 ---
 
+This means all functions except for `__main__` are pure functions and should be tested exhaustively, incl. all possible edge cases (in `test_prepare.py` in the same folder).
+
 The final `result.json` produced by `process_files` has this shape:
 
 ```json
@@ -210,16 +213,12 @@ The final `result.json` produced by `process_files` has this shape:
 }
 ```
 
----
-
-This means all functions except for `__main__` are pure functions and should be tested exhaustively, incl. all possible edge cases (in `test_prepare.py` in the same folder).
-
 
 ## Web UI
 
 After running `prepare.py` over the files from the codebase that should be visualized, `index.html` (together with the necessary JavaScript and CSS) should read in the created `result.json` and show a visualization similar to the below sketch:
 
-![](archgraph_sketch.jpg)
+![](https://franziskahorn.de/demo_archgraph/archgraph_sketch.jpg)
 
 This shows each submodule as a box in the color of the corresponding parent module, arranged in layers (according to the specification in the original `layers` JSON), and with the submodule path as the title (in the border of the box) and a list (possibly spanning multiple columns in the box) with the submodule's unit names (not full paths).
 The boxes must not overlap and ideally there should also be an indication of the top level layers that separate the boxes, e.g., alternating shades of grey in the background.

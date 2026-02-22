@@ -2,6 +2,8 @@
 
 ArchGraph turns a plain-text description of your codebase architecture into an interactive dependency graph. You describe your modules, submodules, and units (functions, classes, etc.) in two files — a layer hierarchy in JSON and unit descriptions in Markdown — and ArchGraph processes them into a single `result.json` that a frontend can render as a navigable graph with layer-violation highlighting.
 
+**You can find an example visualization of a made-up e-commerce codebase [here](https://franziskahorn.de/demo_archgraph/) — click around!**
+
 ## How it works
 
 1. **`layers.json`** — defines the module hierarchy and their allowed dependency directions as a two-level layer structure (root modules → submodules). Dependencies must flow strictly downward through the layers; anything that points back up is flagged as a violation.
@@ -12,7 +14,7 @@ ArchGraph turns a plain-text description of your codebase architecture into an i
 
 4. **Frontend** — reads `result.json` and renders the interactive graph in the browser.
 
-## Project structure
+#### Project structure
 
 ```
 archgraph/
@@ -26,7 +28,7 @@ archgraph/
     └── index.html        # interactive graph visualization
 ```
 
-## Running the data pipeline
+#### Running the data pipeline
 
 Requires [uv](https://docs.astral.sh/uv/).
 
@@ -50,7 +52,7 @@ Output is written to `src/result.json`.
 uv run pytest src/
 ```
 
-## Running the frontend
+#### Running the frontend
 
 Open `src/index.html` in a browser served by any static file server. It will read `result.json` from the same directory and render the graph.
 
@@ -62,11 +64,11 @@ python -m http.server 8000 --directory src
 
 ## How I created this project with AI
 
-I'm not coding a lot by hand these days. However, I still very much care about well-designed software. For this, I follow my Clarity-Driven Development approach, further detailed in [this article](https://franziskahorn.de/articles/2026-01-cdd-humans-ai), where you first think about the Why, What, and How of the software you want to build and summarize your results in sketch documents like [`sketch.md`](sketch.md) in this repository.
+I don't code a lot by hand these days, but I still care deeply about well-designed software. I follow my [Clarity-Driven Development approach](https://franziskahorn.de/articles/2026-01-cdd-humans-ai), where you first think through the Why, What, and How and capture it in sketch documents like [`sketch.md`](sketch.md) before writing a single line of code.
 
-After some minor refinements of the documents based on Claude's comments, I implemented the project step by step together with Claude Agent inside the [Zed IDE](https://zed.dev/). We started with the tests, then moved on to the python script, and finally implemented the frontend. 
+After some minor refinements based on Claude's feedback, I implemented the project step by step with Claude Agent in the [Zed IDE](https://zed.dev/) - tests first, then the Python script, then the frontend. The frontend in particular was a lot of fun: having AI in the loop made it easy to iterate on design ideas until we landed on something less cluttered than the typical arrow-heavy diagram. Instead of showing all connections at once, small icons on each box indicate incoming and outgoing dependencies, and the actual lines only appear when you click on a submodule or unit.
 
-The main implementation took one weekend with 1.5 days spent on creating the sketch document and then a few hours instructing and watching Claude generate the code.
+The whole implementation took one weekend: about 1.5 days writing the sketch document and a few hours instructing Claude (Sonnet 4.6). Without a pro plan it would have cost me around $12 in tokens - definitely worth it!
 
 
 ## Using ArchGraph with your own codebase
@@ -108,7 +110,6 @@ line items and `@core.db.execute` to persist the order.
 
 Paste the following prompt into your AI agent of choice (Claude, GPT-4, Gemini, etc.) after giving it access to your repository:
 
----
 
 > I want you to analyse this codebase and produce two files for a tool called ArchGraph.
 >
@@ -160,6 +161,5 @@ Paste the following prompt into your AI agent of choice (Claude, GPT-4, Gemini, 
 >
 > Produce both files in full. Think carefully about the layer ordering before writing `layers.json` — the most common mistake is placing a module too high when it is actually called by others.
 
----
 
 See `example_data/` for a worked example of a fictional e-commerce platform with 5 modules, 19 submodules, 115 units, and a few intentional layer violations.
