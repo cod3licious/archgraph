@@ -170,7 +170,9 @@ body {
 .submodule-box.dimmed  { opacity: 0.25; }
 .submodule-box.focused { opacity: 1; }
 .unit-name.dimmed      { opacity: 0.3; color: #999; }
-.unit-name.bold        { font-weight: 700; }
+.unit-name.is-selected { font-weight: 700; font-style: italic; }
+.unit-name.is-callee   { font-weight: 700; }
+.unit-name.is-caller   { font-style: italic; }
 
 path.arrow { transition: opacity 0.2s; }
 path.arrow.dimmed { opacity: 0.08; }
@@ -504,35 +506,70 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
     incoming[to][toSide].push(from);
   }
 
-  // Sort each group by partner center-x (for top/bottom) or center-y (left/right)
-  // then assign evenly-spaced ports along the edge.
-  function assignPorts(sm, side, partners, isOutgoing) {
+  // Port assignment: place each port as close as possible to its partner port,
+  // making arrows as straight as possible. Outgoing and incoming ports on the
+  // same edge are assigned jointly so they never overlap.
+
+  const MIN_PORT_GAP = 10; // minimum pixels between adjacent ports on same edge
+
+  // Assign ports jointly per (box, side) so outgoing and incoming never overlap.
+  // Tagged entries: { p, isOut, ideal }. Sort by ideal, push apart, write to maps.
+  function assignJointPorts(sm, side, entries) {
+    if (!entries.length) return;
     const pos = layout[sm], sz = boxSizes[sm];
-    const cx = p => layout[p].x + boxSizes[p].w / 2;
-    const cy = p => layout[p].y + boxSizes[p].h / 2;
+    const isHoriz = side === 'top' || side === 'bottom';
+    const edgeStart = isHoriz ? pos.x + MIN_PORT_GAP        : pos.y + MIN_PORT_GAP;
+    const edgeEnd   = isHoriz ? pos.x + sz.w - MIN_PORT_GAP : pos.y + sz.h - MIN_PORT_GAP;
 
-    const sorted = [...partners].sort((a, b) =>
-      (side === 'left' || side === 'right') ? cy(a) - cy(b) : cx(a) - cx(b)
-    );
+    const sorted = [...entries].sort((a, b) => a.ideal - b.ideal);
+    const vals = sorted.map(e => Math.max(edgeStart, Math.min(edgeEnd, e.ideal)));
+    for (let i = 1; i < vals.length; i++)
+      vals[i] = Math.max(vals[i], vals[i - 1] + MIN_PORT_GAP);
+    for (let i = vals.length - 2; i >= 0; i--)
+      vals[i] = Math.min(vals[i], vals[i + 1] - MIN_PORT_GAP);
 
-    const n = sorted.length;
-    sorted.forEach((partner, i) => {
-      const t = (i + 1) / (n + 1); // fraction along edge, avoids corners
+    sorted.forEach(({ p, isOut }, i) => {
+      const v = vals[i];
       let px, py;
-      if      (side === 'top')    { px = pos.x + sz.w * t; py = pos.y; }
-      else if (side === 'bottom') { px = pos.x + sz.w * t; py = pos.y + sz.h; }
-      else if (side === 'left')   { px = pos.x;             py = pos.y + sz.h * t; }
-      else                        { px = pos.x + sz.w;      py = pos.y + sz.h * t; }
-
-      if (isOutgoing) portOut[sm][partner] = { x: px, y: py, side };
-      else            portIn[sm][partner]  = { x: px, y: py, side };
+      if      (side === 'top')    { px = v;            py = pos.y; }
+      else if (side === 'bottom') { px = v;            py = pos.y + sz.h; }
+      else if (side === 'left')   { px = pos.x;        py = v; }
+      else                        { px = pos.x + sz.w; py = v; }
+      if (isOut) portOut[sm][p] = { x: px, y: py, side };
+      else       portIn[sm][p]  = { x: px, y: py, side };
     });
   }
 
+  // Pass 1: ideal = partner box center. Assigns outgoing; incoming get center too
+  // (will be refined in pass 2 once outgoing ports are known).
   for (const sm of Object.keys(layout)) {
     for (const side of ['top', 'bottom', 'left', 'right']) {
-      if (outgoing[sm][side].length) assignPorts(sm, side, outgoing[sm][side], true);
-      if (incoming[sm][side].length) assignPorts(sm, side, incoming[sm][side], false);
+      const out = outgoing[sm][side], inc = incoming[sm][side];
+      if (!out.length && !inc.length) continue;
+      const isHoriz = side === 'top' || side === 'bottom';
+      const centerOf = p => isHoriz
+        ? layout[p].x + boxSizes[p].w / 2
+        : layout[p].y + boxSizes[p].h / 2;
+      const entries = [
+        ...out.map(p => ({ p, isOut: true,  ideal: centerOf(p) })),
+        ...inc.map(p => ({ p, isOut: false, ideal: centerOf(p) })),
+      ];
+      assignJointPorts(sm, side, entries);
+    }
+  }
+
+  // Pass 2: re-assign using source's now-known outgoing port as ideal for incoming.
+  // Outgoing ports keep their pass-1 positions as ideals (already optimal).
+  for (const sm of Object.keys(layout)) {
+    for (const side of ['top', 'bottom', 'left', 'right']) {
+      const out = outgoing[sm][side], inc = incoming[sm][side];
+      if (!out.length && !inc.length) continue;
+      const isHoriz = side === 'top' || side === 'bottom';
+      const entries = [
+        ...out.map(p => { const port = portOut[sm][p]; return { p, isOut: true,  ideal: isHoriz ? port.x : port.y }; }),
+        ...inc.map(p => { const port = portOut[p]?.[sm]; return { p, isOut: false, ideal: port ? (isHoriz ? port.x : port.y) : (isHoriz ? layout[p].x + boxSizes[p].w / 2 : layout[p].y + boxSizes[p].h / 2) }; }),
+      ];
+      assignJointPorts(sm, side, entries);
     }
   }
 
@@ -593,12 +630,14 @@ function wireInteractions(boxEls, arrowEls, submodules, units, layout, boxSizes)
   const graphPane = document.getElementById('graph-pane');
   let selection = null; // { type: 'submodule'|'unit', id }
 
+  const UNIT_CLASSES = ['dimmed', 'is-selected', 'is-callee', 'is-caller'];
+
   function clearSelection() {
     selection = null;
     for (const el of Object.values(boxEls)) {
       el.classList.remove('dimmed', 'focused');
       for (const u of el.querySelectorAll('.unit-name'))
-        u.classList.remove('dimmed', 'bold');
+        u.classList.remove(...UNIT_CLASSES);
     }
     for (const el of Object.values(arrowEls))
       el.classList.remove('dimmed');
@@ -606,35 +645,63 @@ function wireInteractions(boxEls, arrowEls, submodules, units, layout, boxSizes)
     document.getElementById('detail-content').style.display = 'none';
   }
 
+  function applyUnitClass(el, cls) {
+    // Priority: is-selected > is-callee > is-caller > dimmed
+    // Once a higher-priority class is set, don't downgrade it.
+    const priority = { 'is-selected': 3, 'is-callee': 2, 'is-caller': 1, 'dimmed': 0 };
+    const current = UNIT_CLASSES.find(c => el.classList.contains(c));
+    if (!current || priority[cls] > priority[current]) {
+      el.classList.remove(...UNIT_CLASSES);
+      el.classList.add(cls);
+    }
+  }
+
   function selectSubmodule(sm) {
     selection = { type: 'submodule', id: sm };
-    const deps = Object.keys(submodules[sm]?.dependencies || {});
-    const relevant = new Set([sm, ...deps]);
-    const relevantArrows = new Set(deps.map(d => `${sm}->${d}`));
 
-    // Collect the exact unit paths referenced by any unit in this submodule
+    // Outgoing: submodules this sm depends on, and the exact units referenced
+    const outDeps = Object.keys(submodules[sm]?.dependencies || {});
     const referencedUnits = new Set(
       (submodules[sm]?.units || []).flatMap(name =>
         Object.keys(units[`${sm}.${name}`]?.dependencies || {})
       )
     );
 
+    // Incoming: submodules that depend on this sm, and the exact units that reference sm's units
+    const inDeps = Object.keys(submodules).filter(s =>
+      s !== sm && submodules[s].dependencies?.[sm] !== undefined
+    );
+    const referencingUnits = new Set(
+      Object.values(units)
+        .filter(u => u.submodule !== sm && Object.keys(u.dependencies || {}).some(d => units[d]?.submodule === sm))
+        .map(u => `${u.submodule}.${u.name}`)
+    );
+
+    const relevant = new Set([sm, ...outDeps, ...inDeps]);
+    const relevantArrows = new Set([
+      ...outDeps.map(d => `${sm}->${d}`),
+      ...inDeps.map(s => `${s}->${sm}`),
+    ]);
+
     for (const [s, el] of Object.entries(boxEls)) {
       if (relevant.has(s)) {
         el.classList.remove('dimmed');
         el.classList.add('focused');
+        // Start all units in focused boxes as dimmed, then upgrade
+        for (const u of el.querySelectorAll('.unit-name'))
+          u.classList.remove(...UNIT_CLASSES);
         for (const u of el.querySelectorAll('.unit-name')) {
-          // Bold all units in the selected submodule itself, and only the
-          // specifically referenced units in dependent submodules
-          const bold = s === sm || referencedUnits.has(u.dataset.unit);
-          u.classList.toggle('bold', bold);
-          u.classList.toggle('dimmed', !bold);
+          const uPath = u.dataset.unit;
+          if (s === sm)                       applyUnitClass(u, 'is-selected');
+          else if (referencedUnits.has(uPath)) applyUnitClass(u, 'is-callee');
+          else if (referencingUnits.has(uPath)) applyUnitClass(u, 'is-caller');
+          else                                  applyUnitClass(u, 'dimmed');
         }
       } else {
         el.classList.add('dimmed');
         el.classList.remove('focused');
         for (const u of el.querySelectorAll('.unit-name')) {
-          u.classList.remove('bold');
+          u.classList.remove(...UNIT_CLASSES);
           u.classList.add('dimmed');
         }
       }
@@ -652,37 +719,45 @@ function wireInteractions(boxEls, arrowEls, submodules, units, layout, boxSizes)
     selection = { type: 'unit', id: unitPath };
     const unitData = units[unitPath];
     if (!unitData) return;
-    const sm  = unitData.submodule;
-    const depUnits = Object.keys(unitData.dependencies || {});
-    const depSubmodules = new Set(depUnits.map(u => units[u]?.submodule).filter(Boolean));
-    depSubmodules.delete(sm); // intra-submodule deps don't get arrows
+    const sm = unitData.submodule;
 
-    const relevantArrows = new Set();
-    for (const depSm of depSubmodules)
-      relevantArrows.add(`${sm}->${depSm}`);
+    // Outgoing: units this unit depends on (may be in same or other submodules)
+    const calleeUnits = new Set(Object.keys(unitData.dependencies || {}));
+    const calleeSubs  = new Set([...calleeUnits].map(u => units[u]?.submodule).filter(s => s && s !== sm));
+
+    // Incoming: units that depend on this unit
+    const callerUnits = new Set(
+      Object.entries(units)
+        .filter(([p, u]) => p !== unitPath && u.dependencies?.[unitPath] !== undefined)
+        .map(([p]) => p)
+    );
+    const callerSubs = new Set([...callerUnits].map(u => units[u]?.submodule).filter(s => s && s !== sm));
+
+    const relevant = new Set([sm, ...calleeSubs, ...callerSubs]);
+    const relevantArrows = new Set([
+      ...[...calleeSubs].map(s => `${sm}->${s}`),
+      ...[...callerSubs].map(s => `${s}->${sm}`),
+    ]);
 
     for (const [s, el] of Object.entries(boxEls)) {
-      const isOwn = s === sm;
-      const isDep = depSubmodules.has(s);
-      if (isOwn || isDep) {
+      if (relevant.has(s)) {
         el.classList.remove('dimmed');
         el.classList.add('focused');
+        for (const u of el.querySelectorAll('.unit-name'))
+          u.classList.remove(...UNIT_CLASSES);
         for (const u of el.querySelectorAll('.unit-name')) {
           const uPath = u.dataset.unit;
-          if (uPath === unitPath || depUnits.includes(uPath)) {
-            u.classList.remove('dimmed');
-            u.classList.add('bold');
-          } else {
-            u.classList.add('dimmed');
-            u.classList.remove('bold');
-          }
+          if (uPath === unitPath)            applyUnitClass(u, 'is-selected');
+          else if (calleeUnits.has(uPath))   applyUnitClass(u, 'is-callee');
+          else if (callerUnits.has(uPath))   applyUnitClass(u, 'is-caller');
+          else                               applyUnitClass(u, 'dimmed');
         }
       } else {
         el.classList.add('dimmed');
         el.classList.remove('focused');
         for (const u of el.querySelectorAll('.unit-name')) {
+          u.classList.remove(...UNIT_CLASSES);
           u.classList.add('dimmed');
-          u.classList.remove('bold');
         }
       }
     }
