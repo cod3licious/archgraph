@@ -20,7 +20,7 @@ The JSON file describes the overall architecture (modules in layers) and looks s
 
 ```json
 {
-    "layers": [
+    "root_layers": [
         ["main", "api"],
         ["db"],
         ["core"]
@@ -41,9 +41,9 @@ The JSON file describes the overall architecture (modules in layers) and looks s
 }
 ```
 
-The order of the keys is not important, only the order of the elements in the lists. Every (sub)module (i.e., everything in the lists) must only occur once. This `layers` dict is passed through to `result.json` unchanged (under the key `"layers"`), so `index.html` can read it directly to determine layer bands and submodule positions.
+The order of the keys is not important, only the order of the elements in the lists. Every (sub)module (i.e., everything in the lists) must only occur once. This input JSON is passed through to `result.json` unchanged (under the key `"layers"`), so `index.html` can read it directly to determine layer bands and submodule positions.
 
-The elements under "root" signify the main layers. In the above example, we have 3 main layers: top (with the modules "main" and "api"), middle ("db"), and bottom ("core"). These are the main modules of the codebase we want to visualize (usually folders, sometimes files, in the package's root folder), and these modules will determine the colors of the resulting visualization.
+The elements under "root_layers" signify the main layers. In the above example, we have 3 main layers: top (with the modules "main" and "api"), middle ("db"), and bottom ("core"). These are the main modules of the codebase we want to visualize (usually folders, sometimes files, in the package's root folder), and these modules will determine the colors of the resulting visualization.
 
 Similarly, for each module the JSON additionally describes how its submodules (usually files, e.g., `db.queries.config` would map to `db/queries/config.py` in the package) are arranged into layers. If a module under root was already a file (e.g., "main" in the above example) it should be omitted here.
 
@@ -116,9 +116,12 @@ The function raises an error if any unit path occurs twice in the file.
 
 ### prepare.flatten_layers
 
-Gets the parsed JSON (`layers` dict) and flattens it into a list with all submodules in the right order, i.e., going through the lists under "root" and for each module either adds it directly to the submodule list if it does not occur as a key in `layers` (i.e., is already a file) or extends the list with the results from a single recursive call to this function based on the entry for the corresponding module in the `layers` dict.
-Throws an error in case a submodule does not start with the containing module.
-Once the `all_submodules` list is created, it checks that the elements are unique and otherwise throws an error. Then returns `all_submodules`.
+Gets the parsed JSON (`layers` dict, with keys `root_layers` and `submodule_layers`) and flattens it into a list `all_submodules` with all submodules in the right order. It does this by iterating over `root_layers` (the list of lists) and for each module either:
+- adding it directly to `all_submodules` if it does not appear as a key in `submodule_layers` (i.e., it is already a leaf/file-level module), or
+- extending `all_submodules` with the submodules from `submodule_layers[module]` (iterating over that module's list of lists in order).
+
+Throws an error if any submodule in `submodule_layers` does not start with its containing module name followed by a dot.
+Once `all_submodules` is built, checks that all elements are unique and throws an error if not. Then returns `all_submodules`.
 
 
 ### prepare.validate_unit_paths
@@ -141,7 +144,7 @@ Gets the `all_submodules` list as well as the `unit_order` dict (result from `pa
 
 ### prepare.assign_submodule_colors
 
-Gets the `submodules` dict (from `create_submodules_dict`) and the `layers` dict. Creates a dict with {module: hex color code} for each module (i.e., in the layers under "root" in `layers`), where the assigned colors are pretty pastel colors in rainbow order based on the order the module appears in the layers list (probably easiest if this list of lists is first flattened). Then creates a copy of the `submodules` dict and updates the color values accordingly based on the submodule's module.
+Gets the `submodules` dict (from `create_submodules_dict`) and the `layers` dict. Creates a dict with {module: hex color code} for each module by flattening `layers["root_layers"]` (the list of lists) to get the ordered list of modules. Assigns pretty pastel colors in rainbow order based on that order. Then creates a copy of the `submodules` dict and updates each submodule's `color` value based on its `module` field.
 Returns the updated `submodules` dict.
 
 
@@ -161,7 +164,7 @@ After all units were processed, log another summary message with the number of e
 Gets the (updated) `units` dict (after `resolve_dependencies`) as well as the `layers` dict. Creates a copy of `units` and goes through all units' dependencies and checks that the dependencies don't violate the hierarchy defined in `layers`.
 If there is a violation, log `[WARNING] Architecture Validation: {unit_path} must not depend on {referenced_unit_path}` and set the value for this `referenced_unit_path` in the unit's dependency dict to False. Then returns the updated copy of the `units` dict.
 
-The dependency check could be done efficiently by first building an `allowed_submodule_dependencies` dict that maps from a submodule to a set of allowed submodules. Then for each dependency the corresponding submodule is retrieved from `units` and checked against this set.
+The dependency check could be done efficiently by first building an `allowed_submodule_dependencies` dict that maps from each submodule to the set of submodules it is allowed to depend on. This is derived from `layers["root_layers"]` and `layers["submodule_layers"]`: a submodule may depend on any submodule in the same or lower root layer, and within its own module any submodule in the same or lower submodule layer. Then for each unit dependency, look up the unit's submodule and the dependency's submodule (via the `units` dict) and check against this set.
 
 
 ### prepare.assign_submodule_dependencies
@@ -175,7 +178,14 @@ Gets the `layers` dict, the `submodules` dict (after `assign_submodule_dependenc
 
 ```json
 {
-    "layers": { "<same as the input layers dict>" },
+    "layers": {
+        "root_layers": [["main", "api"], ["db"], ["core"]],
+        "submodule_layers": {
+            "api": [["api.routes"]],
+            "db": [["db.commands"], ["db.queries.sample", "db.queries.config"]],
+            "core": [["core.optimization", "core.prediction"], ["core.common"]]
+        }
+    },
     "submodules": {
         "api.routes": {
             "module": "api",
