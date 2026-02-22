@@ -1,0 +1,73 @@
+# pre-commit (https://pre-commit.com/) config file
+# install pre-commit hooks via `pre-commit install --hook-type pre-commit`
+# install post-merge hooks via `pre-commit install --hook-type post-merge`
+# install post-checkout hooks via `pre-commit install --hook-type post-checkout`
+# install pre-push hooks via `pre-commit install --hook-type pre-push`
+# or all of them with `pre-commit install -t pre-commit -t pre-push -t post-merge -t post-checkout`
+
+# You can skip certain hooks with e.g. `SKIP=black git push`
+# You can skip all hooks with e.g. `git commit --no-verify`
+
+# Uninstall hooks with `pre-commit uninstall [--hook-type <stage>]`
+# If something doesn't work you can also try `pre-commit clean`
+# to delete cached files (like virtual environments used by the hooks
+
+fail_fast: true
+default_install_hook_types: [pre-commit, pre-push, commit-msg, post-checkout, post-merge, post-commit]
+default_stages: [pre-commit, pre-push]
+minimum_pre_commit_version: "4"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict # Check for files that contain merge conflict strings
+      - id: detect-private-key # Detects the presence of private keys
+
+  - repo: https://github.com/abravalheri/validate-pyproject
+    rev: v0.23
+    hooks:
+      - id: validate-pyproject
+
+  - repo: local
+    hooks:
+      - id: lock
+        name: uv lock
+        entry: uv lock
+        language: system
+        files: "(pyproject.toml|version.py)"
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: sync
+        name: uv sync
+        entry: uv sync --frozen
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [post-commit, post-merge, post-checkout]
+
+      - id: lint
+        name: ruff check
+        entry: uv run -- ruff check --force-exclude
+        args: [--fix]
+        language: system
+        stages: [pre-commit, pre-push, manual]
+        types_or: [python, pyi, jupyter]
+        require_serial: true
+
+      - id: format
+        name: ruff format
+        entry: uv run -- ruff format --force-exclude
+        language: system
+        stages: [pre-commit, pre-push, manual]
+        types_or: [python, pyi, jupyter]
+        require_serial: true
+
+      - id: ty
+        name: ty
+        entry: uv run -- ty check
+        language: system
+        stages: [pre-commit, pre-push, manual]
+        types_or: [python, pyi]
+        require_serial: true
