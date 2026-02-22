@@ -213,22 +213,12 @@ def check_layer_violations(units: dict, layers: dict) -> dict:
     result = deepcopy(units)
 
     for unit_path, unit in result.items():
-        sm_a = unit["submodule"]
-        info_a = sm_info.get(sm_a)
-        if info_a is None:
-            continue
-        rr_a, ir_a, root_a = info_a
+        rr_a, ir_a, root_a = sm_info[unit["submodule"]]
         for dep_path in unit["dependencies"]:
-            dep_unit = units.get(dep_path)
-            if dep_unit is None:
+            sm_b = units[dep_path]["submodule"]
+            if unit["submodule"] == sm_b:
                 continue
-            sm_b = dep_unit["submodule"]
-            if sm_a == sm_b:
-                continue
-            info_b = sm_info.get(sm_b)
-            if info_b is None:
-                continue
-            rr_b, ir_b, root_b = info_b
+            rr_b, ir_b, root_b = sm_info[sm_b]
             allowed = rr_b > rr_a or (rr_b == rr_a and root_a == root_b and ir_b > ir_a)
             if not allowed:
                 logger.warning(f"Architecture Validation: {unit_path} must not depend on {dep_path}")
@@ -244,23 +234,23 @@ def assign_submodule_dependencies(submodules: dict, units: dict) -> dict:
     (not unit paths). The boolean is False if *any* unit-level dependency from
     this submodule to the target is a violation (False takes priority over True).
     Intra-submodule dependencies are skipped (no self-arrows in the graph).
+    Shallow-copies each submodule dict, replacing only the 'dependencies' value.
     Does not modify either input dict.
     """
-    result = deepcopy(submodules)
+    sm_deps: dict[str, dict[str, bool]] = {sm: {} for sm in submodules}
     for unit in units.values():
         sm_src = unit["submodule"]
-        if sm_src not in result:
+        if sm_src not in sm_deps:
             continue
-        sm_deps = result[sm_src]["dependencies"]
+        deps = sm_deps[sm_src]
         for dep_unit_path, valid in unit["dependencies"].items():
-            # derive the target submodule from the dep unit path
             dep_sm = dep_unit_path.rsplit(".", 1)[0]
             if dep_sm == sm_src:
                 continue  # intra-submodule dep — no arrow
             # False (violation) takes priority: once False, never set back to True
-            if dep_sm not in sm_deps or (not valid and sm_deps[dep_sm]):
-                sm_deps[dep_sm] = valid
-    return result
+            if dep_sm not in deps or (not valid and deps[dep_sm]):
+                deps[dep_sm] = valid
+    return {sm: {**sm_data, "dependencies": sm_deps[sm]} for sm, sm_data in submodules.items()}
 
 
 def process_files(unit_descriptions: str, layers: dict) -> dict:
