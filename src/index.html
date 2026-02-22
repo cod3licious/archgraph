@@ -174,8 +174,12 @@ body {
 .unit-name.is-callee   { font-weight: 700; }
 .unit-name.is-caller   { font-style: italic; }
 
-path.arrow { transition: opacity 0.2s; }
-path.arrow.dimmed { opacity: 0.08; }
+path.arrow { transition: opacity 0.2s; opacity: 0; }
+path.arrow.visible { opacity: 0.75; }
+path.arrow.dimmed  { opacity: 0; }
+
+.port-symbol { transition: opacity 0.2s; }
+.port-symbol.dimmed { opacity: 0.15; }
 </style>
 </head>
 <body>
@@ -244,11 +248,11 @@ function render(data) {
     boxEls[sm] = box;
   }
 
-  // 7. Draw arrows
-  const arrowEls = drawArrows(submodules, layout, boxSizes, totalW, totalH);
+  // 7. Draw arrows + port symbols
+  const { arrowEls, portSymbolEls } = drawArrows(submodules, layout, boxSizes, totalW, totalH);
 
   // 8. Wire interactions
-  wireInteractions(boxEls, arrowEls, submodules, units, layout, boxSizes);
+  wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, layout, boxSizes);
 }
 
 // ─── Layer flattening ─────────────────────────────────────────────────────────
@@ -441,22 +445,6 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
   svg.setAttribute('width',  totalW);
   svg.setAttribute('height', totalH);
 
-  const defs = svgEl('defs');
-  for (const [id, color] of [['arr-black','#333'], ['arr-red','#c00']]) {
-    const marker = svgEl('marker');
-    marker.setAttribute('id', id);
-    marker.setAttribute('markerWidth', '8');
-    marker.setAttribute('markerHeight', '8');
-    marker.setAttribute('refX', '6');
-    marker.setAttribute('refY', '3');
-    marker.setAttribute('orient', 'auto');
-    const poly = svgEl('path');
-    poly.setAttribute('d', 'M0,0 L0,6 L8,3 z');
-    poly.setAttribute('fill', color);
-    marker.appendChild(poly);
-    defs.appendChild(marker);
-  }
-  svg.appendChild(defs);
 
   // Build edge list (only cross-submodule)
   const edges = []; // { from, to, valid }
@@ -467,130 +455,119 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
     }
   }
 
-  // Assign ports ─────────────────────────────────────────────────────────────
-  // For each box and each of its four edges (top/bottom/left/right), collect
-  // the partner boxes using that edge, then sort them by partner center-x
-  // (for top/bottom) or center-y (for left/right) to minimise crossings, and
-  // space the port positions evenly across the edge.
+  // ── Unified port + symbol assignment ────────────────────────────────────────
+  // For each (box, side), collect all connections (outgoing + incoming), sort
+  // them valid-first then by partner center to minimize crossings, space them
+  // evenly centered on the edge. The same positions serve as both the visual
+  // symbols and the arrow endpoints.
 
-  // port maps: portOut[from][to] = {x,y}, portIn[from][to] = {x,y}
-  const portOut = {}, portIn = {};
-  for (const sm of Object.keys(layout)) { portOut[sm] = {}; portIn[sm] = {}; }
+  const SYM_R   = 4;  // circle radius / triangle half-size
+  const SYM_GAP = 14; // center-to-center spacing between symbols on same edge
+  const SYM_MARGIN = SYM_R + 4;
 
-  // Group edges by (box, edge-side)
-  // edge-side: for each directed edge, determine which side of "from" exits and
-  // which side of "to" enters.
-  //   - If rowIdx(from) < rowIdx(to)  → from exits bottom, to enters top
-  //   - If rowIdx(from) > rowIdx(to)  → from exits top,    to enters bottom
-  //   - If same rowIdx               → from exits right/left, to enters left/right
+  // Determine which side each connection uses
+  // connSide[sm][side] = [{partner, isOut, valid}, ...]
+  const connSide = {};
+  for (const sm of Object.keys(layout))
+    connSide[sm] = { top: [], bottom: [], left: [], right: [] };
 
-  // outgoing[sm][side] = list of partner sm, sorted by partner cx
-  const outgoing = {}, incoming = {};
-  for (const sm of Object.keys(layout)) {
-    outgoing[sm] = { top: [], bottom: [], left: [], right: [] };
-    incoming[sm] = { top: [], bottom: [], left: [], right: [] };
-  }
-
-  for (const { from, to } of edges) {
+  for (const { from, to, valid } of edges) {
     const rf = layout[from].rowIdx, rt = layout[to].rowIdx;
     let fromSide, toSide;
-    if (rf < rt)       { fromSide = 'bottom'; toSide = 'top'; }
-    else if (rf > rt)  { fromSide = 'top';    toSide = 'bottom'; }
+    if (rf < rt)      { fromSide = 'bottom'; toSide = 'top'; }
+    else if (rf > rt) { fromSide = 'top';    toSide = 'bottom'; }
     else {
       const cf = layout[from].x + boxSizes[from].w / 2;
       const ct = layout[to].x   + boxSizes[to].w   / 2;
       fromSide = cf <= ct ? 'right' : 'left';
       toSide   = cf <= ct ? 'left'  : 'right';
     }
-    outgoing[from][fromSide].push(to);
-    incoming[to][toSide].push(from);
+    connSide[from][fromSide].push({ partner: to,   isOut: true,  valid });
+    connSide[to][toSide].push(    { partner: from, isOut: false, valid });
   }
 
-  // Port assignment: place each port as close as possible to its partner port,
-  // making arrows as straight as possible. Outgoing and incoming ports on the
-  // same edge are assigned jointly so they never overlap.
+  // portOut[from][to] and portIn[to][from] store {x, y, side} — set below
+  const portOut = {}, portIn = {};
+  for (const sm of Object.keys(layout)) { portOut[sm] = {}; portIn[sm] = {}; }
 
-  const MIN_PORT_GAP = 10; // minimum pixels between adjacent ports on same edge
+  // portSymbolEls[sm] = array of SVG elements (symbols drawn at port positions)
+  const portSymbolEls = {};
 
-  // Assign ports jointly per (box, side) so outgoing and incoming never overlap.
-  // Tagged entries: { p, isOut, ideal }. Sort by ideal, push apart, write to maps.
-  function assignJointPorts(sm, side, entries) {
-    if (!entries.length) return;
-    const pos = layout[sm], sz = boxSizes[sm];
-    const isHoriz = side === 'top' || side === 'bottom';
-    const edgeStart = isHoriz ? pos.x + MIN_PORT_GAP        : pos.y + MIN_PORT_GAP;
-    const edgeEnd   = isHoriz ? pos.x + sz.w - MIN_PORT_GAP : pos.y + sz.h - MIN_PORT_GAP;
-
-    const sorted = [...entries].sort((a, b) => a.ideal - b.ideal);
-    const vals = sorted.map(e => Math.max(edgeStart, Math.min(edgeEnd, e.ideal)));
-    for (let i = 1; i < vals.length; i++)
-      vals[i] = Math.max(vals[i], vals[i - 1] + MIN_PORT_GAP);
-    for (let i = vals.length - 2; i >= 0; i--)
-      vals[i] = Math.min(vals[i], vals[i + 1] - MIN_PORT_GAP);
-
-    sorted.forEach(({ p, isOut }, i) => {
-      const v = vals[i];
-      let px, py;
-      if      (side === 'top')    { px = v;            py = pos.y; }
-      else if (side === 'bottom') { px = v;            py = pos.y + sz.h; }
-      else if (side === 'left')   { px = pos.x;        py = v; }
-      else                        { px = pos.x + sz.w; py = v; }
-      if (isOut) portOut[sm][p] = { x: px, y: py, side };
-      else       portIn[sm][p]  = { x: px, y: py, side };
-    });
-  }
-
-  // Pass 1: ideal = partner box center. Assigns outgoing; incoming get center too
-  // (will be refined in pass 2 once outgoing ports are known).
   for (const sm of Object.keys(layout)) {
+    const syms = [];
+    const pos = layout[sm], sz = boxSizes[sm];
+
     for (const side of ['top', 'bottom', 'left', 'right']) {
-      const out = outgoing[sm][side], inc = incoming[sm][side];
-      if (!out.length && !inc.length) continue;
+      // Sort: valid first, then violations; within each group by partner center
+      // to preserve left-right order and minimize crossings.
       const isHoriz = side === 'top' || side === 'bottom';
-      const centerOf = p => isHoriz
+      const partnerCenter = p => isHoriz
         ? layout[p].x + boxSizes[p].w / 2
         : layout[p].y + boxSizes[p].h / 2;
-      const entries = [
-        ...out.map(p => ({ p, isOut: true,  ideal: centerOf(p) })),
-        ...inc.map(p => ({ p, isOut: false, ideal: centerOf(p) })),
-      ];
-      assignJointPorts(sm, side, entries);
+
+      const items = [...connSide[sm][side]].sort((a, b) => {
+        if (a.valid !== b.valid) return a.valid ? -1 : 1;
+        return partnerCenter(a.partner) - partnerCenter(b.partner);
+      });
+      if (!items.length) continue;
+
+      const n = items.length;
+      const totalSpan = (n - 1) * SYM_GAP;
+      const edgeLen = isHoriz ? sz.w : sz.h;
+      const start = Math.max(SYM_MARGIN, (edgeLen - totalSpan) / 2);
+
+      items.forEach(({ partner, isOut, valid }, i) => {
+        const color = valid ? '#555' : '#c00';
+        const t = start + i * SYM_GAP;
+        let x, y;
+        if      (side === 'top')    { x = pos.x + t;    y = pos.y; }
+        else if (side === 'bottom') { x = pos.x + t;    y = pos.y + sz.h; }
+        else if (side === 'left')   { x = pos.x;        y = pos.y + t; }
+        else                        { x = pos.x + sz.w; y = pos.y + t; }
+
+        // Register as port for arrow drawing
+        if (isOut) portOut[sm][partner] = { x, y, side };
+        else       portIn[sm][partner]  = { x, y, side };
+
+        // Draw symbol
+        let el;
+        if (isOut) {
+          let pts;
+          if      (side === 'bottom') pts = `${x},${y+SYM_R*2} ${x-SYM_R},${y} ${x+SYM_R},${y}`;
+          else if (side === 'top')    pts = `${x},${y-SYM_R*2} ${x-SYM_R},${y} ${x+SYM_R},${y}`;
+          else if (side === 'right')  pts = `${x+SYM_R*2},${y} ${x},${y-SYM_R} ${x},${y+SYM_R}`;
+          else                        pts = `${x-SYM_R*2},${y} ${x},${y-SYM_R} ${x},${y+SYM_R}`;
+          el = svgEl('polygon');
+          el.setAttribute('points', pts);
+        } else {
+          el = svgEl('circle');
+          el.setAttribute('cx', x);
+          el.setAttribute('cy', y);
+          el.setAttribute('r', SYM_R);
+        }
+        el.setAttribute('fill', color);
+        el.classList.add('port-symbol');
+        el.dataset.sm = sm;
+        svg.appendChild(el);
+        syms.push(el);
+      });
     }
+    portSymbolEls[sm] = syms;
   }
 
-  // Pass 2: re-assign using source's now-known outgoing port as ideal for incoming.
-  // Outgoing ports keep their pass-1 positions as ideals (already optimal).
-  for (const sm of Object.keys(layout)) {
-    for (const side of ['top', 'bottom', 'left', 'right']) {
-      const out = outgoing[sm][side], inc = incoming[sm][side];
-      if (!out.length && !inc.length) continue;
-      const isHoriz = side === 'top' || side === 'bottom';
-      const entries = [
-        ...out.map(p => { const port = portOut[sm][p]; return { p, isOut: true,  ideal: isHoriz ? port.x : port.y }; }),
-        ...inc.map(p => { const port = portOut[p]?.[sm]; return { p, isOut: false, ideal: port ? (isHoriz ? port.x : port.y) : (isHoriz ? layout[p].x + boxSizes[p].w / 2 : layout[p].y + boxSizes[p].h / 2) }; }),
-      ];
-      assignJointPorts(sm, side, entries);
-    }
-  }
-
-  // Draw edges ───────────────────────────────────────────────────────────────
+  // Draw edges (hidden by default, shown on selection) ───────────────────────
+  // Lines only — the symbols at each end already convey direction.
   const arrowEls = {};
   for (const { from, to, valid } of edges) {
     const p1 = portOut[from][to];
     const p2 = portIn[to][from];
     if (!p1 || !p2) continue;
 
-    const color    = valid ? '#333' : '#c00';
-    const markerId = valid ? 'arr-black' : 'arr-red';
-    const d = bezierPath(p1, p2);
-
     const path = svgEl('path');
-    path.setAttribute('d', d);
+    path.setAttribute('d', bezierPath(p1, p2));
     path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', color);
+    path.setAttribute('stroke', valid ? '#333' : '#c00');
     path.setAttribute('stroke-width', '1.5');
-    path.setAttribute('marker-end', `url(#${markerId})`);
-    path.setAttribute('opacity', '0.7');
     path.classList.add('arrow');
     path.dataset.from = from;
     path.dataset.to   = to;
@@ -598,7 +575,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
     arrowEls[`${from}->${to}`] = path;
   }
 
-  return arrowEls;
+  return { arrowEls, portSymbolEls };
 }
 
 function svgEl(tag) {
@@ -626,7 +603,7 @@ function bezierPath(p1, p2) {
 }
 
 // ─── Interactions ─────────────────────────────────────────────────────────────
-function wireInteractions(boxEls, arrowEls, submodules, units, layout, boxSizes) {
+function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, layout, boxSizes) {
   const graphPane = document.getElementById('graph-pane');
   let selection = null; // { type: 'submodule'|'unit', id }
 
@@ -640,7 +617,9 @@ function wireInteractions(boxEls, arrowEls, submodules, units, layout, boxSizes)
         u.classList.remove(...UNIT_CLASSES);
     }
     for (const el of Object.values(arrowEls))
-      el.classList.remove('dimmed');
+      el.classList.remove('dimmed', 'visible');
+    for (const syms of Object.values(portSymbolEls))
+      for (const el of syms) el.classList.remove('dimmed');
     document.getElementById('detail-placeholder').style.display = '';
     document.getElementById('detail-content').style.display = 'none';
   }
@@ -708,9 +687,14 @@ function wireInteractions(boxEls, arrowEls, submodules, units, layout, boxSizes)
     }
 
     for (const [key, el] of Object.entries(arrowEls)) {
-      if (relevantArrows.has(key)) el.classList.remove('dimmed');
-      else el.classList.add('dimmed');
+      if (relevantArrows.has(key)) { el.classList.add('visible'); el.classList.remove('dimmed'); }
+      else { el.classList.remove('visible'); el.classList.add('dimmed'); }
     }
+    for (const [s, syms] of Object.entries(portSymbolEls))
+      for (const el of syms) {
+        if (relevant.has(s)) el.classList.remove('dimmed');
+        else el.classList.add('dimmed');
+      }
 
     showSubmoduleDetail(sm, submodules[sm], units);
   }
@@ -763,9 +747,14 @@ function wireInteractions(boxEls, arrowEls, submodules, units, layout, boxSizes)
     }
 
     for (const [key, el] of Object.entries(arrowEls)) {
-      if (relevantArrows.has(key)) el.classList.remove('dimmed');
-      else el.classList.add('dimmed');
+      if (relevantArrows.has(key)) { el.classList.add('visible'); el.classList.remove('dimmed'); }
+      else { el.classList.remove('visible'); el.classList.add('dimmed'); }
     }
+    for (const [s, syms] of Object.entries(portSymbolEls))
+      for (const el of syms) {
+        if (relevant.has(s)) el.classList.remove('dimmed');
+        else el.classList.add('dimmed');
+      }
 
     showUnitDetail(unitPath, unitData);
   }
