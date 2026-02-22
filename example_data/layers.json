@@ -1,0 +1,35 @@
+{
+  "root_layers": [
+    ["api"],
+    ["orders"],
+    ["payments"],
+    ["catalog"],
+    ["core"]
+  ],
+  "submodule_layers": {
+    "api": [
+      ["api.products", "api.orders", "api.payments"],
+      ["api.auth"]
+    ],
+    "orders": [
+      ["orders.order_mgmt"],
+      ["orders.checkout"],
+      ["orders.cart"],
+      ["orders.order_repo"]
+    ],
+    "payments": [
+      ["payments.refunds", "payments.invoicing"],
+      ["payments.gateway"]
+    ],
+    "catalog": [
+      ["catalog.search"],
+      ["catalog.pricing"],
+      ["catalog.products"],
+      ["catalog.inventory"]
+    ],
+    "core": [
+      ["core.email", "core.events"],
+      ["core.db", "core.cache"]
+    ]
+  }
+}
