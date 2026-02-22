@@ -72,7 +72,7 @@ def _make_units(deps_map: dict) -> dict:
             "submodule": path.rsplit(".", 1)[0],
             "name": path.rsplit(".", 1)[1],
             "description": "",
-            "dependencies": {d: True for d in deps},
+            "dependencies": dict.fromkeys(deps, True),
         }
         for path, deps in deps_map.items()
     }
@@ -82,8 +82,9 @@ def _make_units(deps_map: dict) -> dict:
 # parse_unit_descriptions
 # ---------------------------------------------------------------------------
 
+
 def test_parse_basic_parsing():
-    units, order = parse_unit_descriptions(UNITS_MD)
+    units, _ = parse_unit_descriptions(UNITS_MD)
     assert "api.routes.get_samples" in units
     u = units["api.routes.get_samples"]
     assert u["submodule"] == "api.routes"
@@ -105,8 +106,13 @@ def test_parse_unit_order_contains_short_names():
 def test_parse_unit_order_all_submodules_present():
     _, order = parse_unit_descriptions(UNITS_MD)
     assert set(order.keys()) == {
-        "api.routes", "db.queries.sample", "db.queries.config",
-        "db.commands", "core.prediction", "core.common", "main",
+        "api.routes",
+        "db.queries.sample",
+        "db.queries.config",
+        "db.commands",
+        "core.prediction",
+        "core.common",
+        "main",
     }
 
 
@@ -170,6 +176,7 @@ def test_parse_at_in_backticks_without_at_not_a_dep():
 # flatten_layers
 # ---------------------------------------------------------------------------
 
+
 def _idx(result):
     return {sm: i for i, sm in enumerate(result)}
 
@@ -184,8 +191,14 @@ def test_flatten_basic_order():
 
 def test_flatten_all_submodules_present():
     assert set(flatten_layers(LAYERS)) == {
-        "main", "api.routes", "db.commands", "db.queries.sample",
-        "db.queries.config", "core.optimization", "core.prediction", "core.common",
+        "main",
+        "api.routes",
+        "db.commands",
+        "db.queries.sample",
+        "db.queries.config",
+        "core.optimization",
+        "core.prediction",
+        "core.common",
     }
 
 
@@ -319,6 +332,7 @@ def test_validate_both_errors_logged(capsys):
 # create_submodules_dict
 # ---------------------------------------------------------------------------
 
+
 def test_create_submodules_basic_structure(capsys):
     result, _ = _capture(
         create_submodules_dict,
@@ -376,6 +390,7 @@ def test_create_submodules_empty_unit_list_for_missing_submodule(capsys):
 # assign_submodule_colors
 # ---------------------------------------------------------------------------
 
+
 def _sm(module):
     return {"module": module, "color": "#D3D3D3", "units": [], "dependencies": {}}
 
@@ -432,6 +447,7 @@ def test_colors_all_modules_in_rainbow_order_differ():
 # ---------------------------------------------------------------------------
 # resolve_dependencies
 # ---------------------------------------------------------------------------
+
 
 def test_resolve_valid_dep_kept(capsys):
     units = _make_units({"a.b.f": ["a.b.g"], "a.b.g": []})
@@ -501,6 +517,7 @@ def test_resolve_self_dep_not_counted_as_error(capsys):
 # check_layer_violations
 # ---------------------------------------------------------------------------
 
+
 def _violation_units(unit_a, sm_a, dep_b, sm_b):
     return {
         unit_a: {"submodule": sm_a, "name": unit_a.split(".")[-1], "description": "", "dependencies": {dep_b: True}},
@@ -541,8 +558,10 @@ def test_check_invalid_intra_module_upward(capsys):
 
 def test_check_invalid_same_intra_layer_siblings(capsys):
     units = _violation_units(
-        "db.queries.sample.f", "db.queries.sample",
-        "db.queries.config.g", "db.queries.config",
+        "db.queries.sample.f",
+        "db.queries.sample",
+        "db.queries.config.g",
+        "db.queries.config",
     )
     result, _ = _capture(check_layer_violations, units, LAYERS, capsys=capsys)
     assert result["db.queries.sample.f"]["dependencies"]["db.queries.config.g"] is False
@@ -591,6 +610,7 @@ def test_check_cross_module_lower_to_higher_invalid(capsys):
 # ---------------------------------------------------------------------------
 # assign_submodule_dependencies
 # ---------------------------------------------------------------------------
+
 
 def _bare_sm(name, module):
     return {"module": module, "color": "#fff", "units": [], "dependencies": {}}
@@ -668,6 +688,7 @@ def test_assign_intra_submodule_deps_skipped():
 # create_result
 # ---------------------------------------------------------------------------
 
+
 def test_create_result_has_required_keys():
     result = create_result(LAYERS, {}, {})
     assert "layers" in result
@@ -706,6 +727,7 @@ def test_create_result_no_extra_keys():
 # ---------------------------------------------------------------------------
 # process_files (integration)
 # ---------------------------------------------------------------------------
+
 
 def test_process_full_pipeline_structure(capsys):
     result, _ = _capture(process_files, UNITS_MD, LAYERS, capsys=capsys)

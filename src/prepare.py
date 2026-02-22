@@ -4,8 +4,6 @@ import re
 from copy import deepcopy
 from pathlib import Path
 
-# ── parse_unit_descriptions ───────────────────────────────────────────────────
-
 
 def parse_unit_descriptions(unit_descriptions: str) -> tuple[dict, dict]:
     """Parse markdown → (units dict, unit_order dict).
@@ -43,9 +41,6 @@ def parse_unit_descriptions(unit_descriptions: str) -> tuple[dict, dict]:
     return units, unit_order
 
 
-# ── flatten_layers ────────────────────────────────────────────────────────────
-
-
 def flatten_layers(layers: dict) -> list[str]:
     """Flatten root_layers/submodule_layers JSON into an ordered list of submodules.
 
@@ -81,9 +76,6 @@ def flatten_layers(layers: dict) -> list[str]:
     return all_submodules
 
 
-# ── validate_unit_paths ───────────────────────────────────────────────────────
-
-
 def validate_unit_paths(units: dict, all_submodules: list[str]) -> bool:
     """Return True iff all unit paths are valid w.r.t. the submodule list."""
     submodule_set = set(all_submodules)
@@ -99,9 +91,6 @@ def validate_unit_paths(units: dict, all_submodules: list[str]) -> bool:
             print(f"[ERROR] Unknown Submodule: {unit_path} is not part of any submodule in the provided architectural layers")
             valid = False
     return valid
-
-
-# ── create_submodules_dict ────────────────────────────────────────────────────
 
 
 def create_submodules_dict(all_submodules: list[str], unit_order: dict) -> dict:
@@ -124,9 +113,6 @@ def create_submodules_dict(all_submodules: list[str], unit_order: dict) -> dict:
     return submodules
 
 
-# ── assign_submodule_colors ───────────────────────────────────────────────────
-
-
 def assign_submodule_colors(submodules: dict, layers: dict) -> dict:
     """Assign pastel rainbow colors by root module.
 
@@ -146,9 +132,6 @@ def assign_submodule_colors(submodules: dict, layers: dict) -> dict:
     for sm_data in result.values():
         sm_data["color"] = module_colors.get(sm_data["module"], "#D3D3D3")
     return result
-
-
-# ── resolve_dependencies ──────────────────────────────────────────────────────
 
 
 def resolve_dependencies(units: dict) -> dict:
@@ -188,9 +171,6 @@ def resolve_dependencies(units: dict) -> dict:
 
     print(f"Dependency resolution completed with {error_count} error(s)")
     return result
-
-
-# ── check_layer_violations ────────────────────────────────────────────────────
 
 
 def _build_allowed_set(layers: dict) -> dict[str, set[str]]:
@@ -265,9 +245,6 @@ def check_layer_violations(units: dict, layers: dict) -> dict:
     return result
 
 
-# ── assign_submodule_dependencies ─────────────────────────────────────────────
-
-
 def assign_submodule_dependencies(submodules: dict, units: dict) -> dict:
     """Aggregate unit-level dependencies up to the submodule level.
 
@@ -294,9 +271,6 @@ def assign_submodule_dependencies(submodules: dict, units: dict) -> dict:
     return result
 
 
-# ── create_result ─────────────────────────────────────────────────────────────
-
-
 def create_result(layers: dict, submodules: dict, units: dict) -> dict:
     """Assemble the final result dict for result.json.
 
@@ -308,9 +282,6 @@ def create_result(layers: dict, submodules: dict, units: dict) -> dict:
         "submodules": submodules,
         "units": units,
     }
-
-
-# ── process_files ─────────────────────────────────────────────────────────────
 
 
 def process_files(unit_descriptions: str, layers: dict) -> dict:
@@ -325,8 +296,6 @@ def process_files(unit_descriptions: str, layers: dict) -> dict:
     submodules = assign_submodule_dependencies(submodules, units)
     return create_result(layers, submodules, units)
 
-
-# ── __main__ ──────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import argparse
