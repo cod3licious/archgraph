@@ -601,7 +601,7 @@ function svgEl(tag) {
 // Both outgoing (p1) and incoming (p2) control points extend outward from the box face.
 function bezierPath(p1, p2) {
   const dist = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
-  const cp   = Math.max(40, dist * 0.45);
+  const cp   = Math.min(Math.max(20, dist * 0.25), 120);
 
   // Outward tangent vector for a given side
   const tangent = side => {
