@@ -20,26 +20,28 @@ The JSON file describes the overall architecture (modules in layers) and looks s
 
 ```json
 {
-    "root": [
+    "layers": [
         ["main", "api"],
         ["db"],
         ["core"]
     ],
-    "api": [
-        ["api.routes"]
-    ],
-    "db": [
-        ["db.commands"],
-        ["db.queries.sample", "db.queries.config"]
-    ],
-    "core": [
-        ["core.optimization", "core.prediction"],
-        ["core.common"]
-    ]
+    "submodule_layers": {
+        "api": [
+            ["api.routes"]
+        ],
+        "db": [
+            ["db.commands"],
+            ["db.queries.sample", "db.queries.config"]
+        ],
+        "core": [
+            ["core.optimization", "core.prediction"],
+            ["core.common"]
+        ]
+    }
 }
 ```
 
-The order of the keys is not important, only the order of the elements in the lists. Every (sub)module (i.e., everything in the lists) must only occur once.
+The order of the keys is not important, only the order of the elements in the lists. Every (sub)module (i.e., everything in the lists) must only occur once. This `layers` dict is passed through to `result.json` unchanged (under the key `"layers"`), so `index.html` can read it directly to determine layer bands and submodule positions.
 
 The elements under "root" signify the main layers. In the above example, we have 3 main layers: top (with the modules "main" and "api"), middle ("db"), and bottom ("core"). These are the main modules of the codebase we want to visualize (usually folders, sometimes files, in the package's root folder), and these modules will determine the colors of the resulting visualization.
 
@@ -102,12 +104,12 @@ Gets as inputs `unit_descriptions: str` (contents of the markdown file) and `lay
 ### prepare.parse_unit_descriptions
 
 Gets as input the raw contents of the markdown file as a string and returns a dictionary `units` with keys: full unit path (= header in the markdown file without the leading `### `) and as values a dict with:
-- submodule (str): the first part of the unit path before the last dot
-- name (str): the last part of the unit path after the last dot
+- submodule (str): the part of the unit path before the last dot
+- name (str): the part of the unit path after the last dot
 - description (str): all the text after the unit's header until the next header (stripped of leading and trailing whitespace)
 - dependencies (dict[str, True]): a dictionary with all of the mentioned dependencies (without the @), without further validation (i.e., NOT yet checking that they match other unit paths in the file), always mapping to True (i.e., declaring the dependency valid by default, as a placeholder until `check_layer_violations` is run)
 
-Additionally, the function returns `unit_order`, a dict with {submodule: list of all the unit paths from this submodule in the order they occurred in the file}.
+Additionally, the function returns `unit_order`, a dict with {submodule: list of the short unit names (not full paths) from this submodule in the order they occurred in the file}.
 
 The function raises an error if any unit path occurs twice in the file.
 
@@ -132,9 +134,8 @@ Returns True if all checks run through without errors, otherwise False
 
 Gets the `all_submodules` list as well as the `unit_order` dict (result from `parse_unit_descriptions`) and creates and returns a new dict `submodules` with each submodule as a key and as the corresponding value a dict with:
 - module (str): the part until the first dot (or the whole string if it contains no dot, e.g., "main")
-- name (str): again the submodule (same as the key, for convenience)
 - color (str): "#D3D3D3" (light grey as the default color)
-- units (list[str]): the list of units from `unit_order` or an empty list (and log a warning in case a submodule has no units)
+- units (list[str]): the list of short unit names from `unit_order` or an empty list (and log a warning in case a submodule has no units)
 - dependencies (dict[str, bool]): an empty dict for now
 
 
@@ -165,12 +166,41 @@ The dependency check could be done efficiently by first building an `allowed_sub
 
 ### prepare.assign_submodule_dependencies
 
-Gets the `submodules` dict and the (updated) `units` dict (after `check_layer_violations`). Creates a copy of `submodules` and updates the dependencies dict of all submodules based on the dependencies of the submodules's units. The updated dict should contain dependencies at the unit level (same as in `units`) and also copy over the boolean that indicates whether this dependency violates the architectural layering.
+Gets the `submodules` dict and the (updated) `units` dict (after `check_layer_violations`). Creates a copy of `submodules` and updates the `dependencies` dict of each submodule by aggregating over all of its units' dependencies. The keys are target submodule paths (not unit paths), and the value is `True` if all dependencies from this submodule to the target submodule are valid, or `False` if any one of them is a violation. (An arrow between two submodules is red if any dependency between them violates the architecture.) Dependencies within the same submodule are skipped (no self-arrows).
 
 
 ### prepare.create_result
 
-Gets the `layers` dict, the `submodules` dict (after `assign_submodule_dependencies`), and the `units` dict (after `check_layer_violations`). Creates and returns the final result dict that will later be saved as a JSON and used by `index.html` to create the visualization of the codebase. The exact format of the result dict should be determined based on what is best for `index.html`.
+Gets the `layers` dict, the `submodules` dict (after `assign_submodule_dependencies`), and the `units` dict (after `check_layer_violations`). Assembles and returns the final result dict:
+
+```json
+{
+    "layers": { "<same as the input layers dict>" },
+    "submodules": {
+        "api.routes": {
+            "module": "api",
+            "color": "#FFDFBA",
+            "units": ["get_samples", "get_config", "post_config"],
+            "dependencies": {
+                "db.queries.sample": true,
+                "db.queries.config": false
+            }
+        }
+    },
+    "units": {
+        "api.routes.get_samples": {
+            "submodule": "api.routes",
+            "name": "get_samples",
+            "description": "Receives a GET request...",
+            "dependencies": {
+                "db.queries.sample.get_samples": true
+            }
+        }
+    }
+}
+```
+
+Since the intermediate data structures were already designed to match this shape, this function requires no transformation beyond assembling the three parts into a single dict.
 
 ---
 
