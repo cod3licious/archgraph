@@ -6,7 +6,7 @@ ArchGraph is a web app that gives an overview of a codebase and the dependencies
 
 The project only consists of a python script `prepare.py` (and the corresponding tests in `test_prepare.py`), which processes a JSON and markdown file (containing a description of the codebase in question) to create `result.json`, and then a static `index.html` (and the necessary JavaScript and CSS) to read in and visualize `result.json`.
 
-Glossary:
+**Glossary:**
 - "module": the high level grouping: a module is usually a file or folder in the project's root directory; determines the color of the boxes in the final visualization.
 - "submodule": the low level grouping: one module can have multiple submodules, usually the files at the end of all directory paths in this module; for projects where 1 file = 1 unit (e.g., 1 class like in Java), a submodule can also be the last folder in this chain that contains these files. Each submodule will be visualized as a box (in the color of its parent module) that contains a list of its units' names.
 - "unit": the terminal nodes of the (sub)module tree, usually the functions and classes contained in a submodule. Each unit is associated with a description that also contains references to the other units it depends on.

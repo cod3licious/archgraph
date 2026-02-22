@@ -14,7 +14,7 @@ ArchGraph turns a plain-text description of your codebase architecture into an i
 
 4. **Frontend** — reads `result.json` and renders the interactive graph in the browser.
 
-#### Project structure
+### Project structure
 
 ```
 archgraph/
@@ -28,7 +28,7 @@ archgraph/
     └── index.html        # interactive graph visualization
 ```
 
-#### Running the data pipeline
+### Running the data pipeline
 
 Requires [uv](https://docs.astral.sh/uv/).
 
@@ -52,7 +52,7 @@ Output is written to `src/result.json`.
 uv run pytest src/
 ```
 
-#### Running the frontend
+### Running the frontend
 
 Open `src/index.html` in a browser served by any static file server. It will read `result.json` from the same directory and render the graph.
 
