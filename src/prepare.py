@@ -2,7 +2,6 @@ import colorsys
 import json
 import logging
 import re
-from copy import deepcopy
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -210,19 +209,24 @@ def check_layer_violations(units: dict, layers: dict) -> dict:
     Does not modify the input dict.
     """
     sm_info = _build_sm_info(layers)
-    result = deepcopy(units)
+    result: dict[str, dict] = {}
 
-    for unit_path, unit in result.items():
+    for unit_path, unit in units.items():
         rr_a, ir_a, root_a = sm_info[unit["submodule"]]
-        for dep_path in unit["dependencies"]:
+        resolved: dict[str, bool] = {}
+        for dep_path, valid in unit["dependencies"].items():
             sm_b = units[dep_path]["submodule"]
             if unit["submodule"] == sm_b:
+                resolved[dep_path] = valid
                 continue
             rr_b, ir_b, root_b = sm_info[sm_b]
             allowed = rr_b > rr_a or (rr_b == rr_a and root_a == root_b and ir_b > ir_a)
             if not allowed:
                 logger.warning(f"Architecture Validation: {unit_path} must not depend on {dep_path}")
-                unit["dependencies"][dep_path] = False
+                resolved[dep_path] = False
+            else:
+                resolved[dep_path] = valid
+        result[unit_path] = {**unit, "dependencies": resolved}
 
     return result
 
