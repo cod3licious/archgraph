@@ -98,7 +98,8 @@ Gets as inputs `unit_descriptions: str` (contents of the markdown file) and `lay
 - `@prepare.resolve_dependencies`
 - `@prepare.check_layer_violations`
 - `@prepare.assign_submodule_dependencies`
-- `@prepare.create_result`
+
+After all steps complete, assembles and returns the final result dict directly as `{"layers": layers, "submodules": submodules, "units": units}`.
 
 
 ### prepare.parse_unit_descriptions
@@ -171,10 +172,9 @@ The dependency check could be done efficiently by first building an `allowed_sub
 
 Gets the `submodules` dict and the (updated) `units` dict (after `check_layer_violations`). Creates a copy of `submodules` and updates the `dependencies` dict of each submodule by aggregating over all of its units' dependencies. The keys are target submodule paths (not unit paths), and the value is `True` if all dependencies from this submodule to the target submodule are valid, or `False` if any one of them is a violation. (An arrow between two submodules is red if any dependency between them violates the architecture.) Dependencies within the same submodule are skipped (no self-arrows).
 
+---
 
-### prepare.create_result
-
-Gets the `layers` dict, the `submodules` dict (after `assign_submodule_dependencies`), and the `units` dict (after `check_layer_violations`). Assembles and returns the final result dict:
+The final `result.json` produced by `process_files` has this shape:
 
 ```json
 {
@@ -209,8 +209,6 @@ Gets the `layers` dict, the `submodules` dict (after `assign_submodule_dependenc
     }
 }
 ```
-
-Since the intermediate data structures were already designed to match this shape, this function requires no transformation beyond assembling the three parts into a single dict.
 
 ---
 

@@ -7,7 +7,6 @@ from prepare import (
     assign_submodule_colors,
     assign_submodule_dependencies,
     check_layer_violations,
-    create_result,
     create_submodules_dict,
     flatten_layers,
     parse_unit_descriptions,
@@ -682,46 +681,6 @@ def test_assign_intra_submodule_deps_skipped():
     }
     result = assign_submodule_dependencies(submodules, units)
     assert "a.x" not in result["a.x"]["dependencies"]
-
-
-# ---------------------------------------------------------------------------
-# create_result
-# ---------------------------------------------------------------------------
-
-
-def test_create_result_has_required_keys():
-    result = create_result(LAYERS, {}, {})
-    assert "layers" in result
-    assert "submodules" in result
-    assert "units" in result
-
-
-def test_create_result_layers_passed_through_unchanged():
-    result = create_result(LAYERS, {}, {})
-    assert result["layers"] == LAYERS
-
-
-def test_create_result_layers_has_root_layers():
-    result = create_result(LAYERS, {}, {})
-    assert "root_layers" in result["layers"]
-    assert "submodule_layers" in result["layers"]
-
-
-def test_create_result_submodules_passed_through():
-    submodules = {"a.x": {"module": "a", "color": "#fff", "units": [], "dependencies": {}}}
-    result = create_result(LAYERS, submodules, {})
-    assert result["submodules"] is submodules
-
-
-def test_create_result_units_passed_through():
-    units = {"a.x.f": {"submodule": "a.x", "name": "f", "description": "", "dependencies": {}}}
-    result = create_result(LAYERS, {}, units)
-    assert result["units"] is units
-
-
-def test_create_result_no_extra_keys():
-    result = create_result(LAYERS, {}, {})
-    assert set(result.keys()) == {"layers", "submodules", "units"}
 
 
 # ---------------------------------------------------------------------------

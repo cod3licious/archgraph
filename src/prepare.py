@@ -263,19 +263,6 @@ def assign_submodule_dependencies(submodules: dict, units: dict) -> dict:
     return result
 
 
-def create_result(layers: dict, submodules: dict, units: dict) -> dict:
-    """Assemble the final result dict for result.json.
-
-    The layers dict is passed through unchanged so index.html can use
-    root_layers and submodule_layers directly for positioning.
-    """
-    return {
-        "layers": layers,
-        "submodules": submodules,
-        "units": units,
-    }
-
-
 def process_files(unit_descriptions: str, layers: dict) -> dict:
     units, unit_order = parse_unit_descriptions(unit_descriptions)
     all_submodules = flatten_layers(layers)
@@ -286,7 +273,7 @@ def process_files(unit_descriptions: str, layers: dict) -> dict:
     units = resolve_dependencies(units)
     units = check_layer_violations(units, layers)
     submodules = assign_submodule_dependencies(submodules, units)
-    return create_result(layers, submodules, units)
+    return {"layers": layers, "submodules": submodules, "units": units}
 
 
 if __name__ == "__main__":
