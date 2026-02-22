@@ -10,3 +10,4 @@ wheels/
 .venv
 
 src/result.json
+.DS_Store
