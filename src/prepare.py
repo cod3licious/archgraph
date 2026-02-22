@@ -115,18 +115,20 @@ def create_submodules_dict(all_submodules: list[str], unit_order: dict) -> dict:
 
 
 def assign_submodule_colors(submodules: dict, layers: dict) -> dict:
-    """Assign pastel rainbow colors by root module.
+    """Assign muted earthy colors by root module.
 
-    Colors are spread evenly across the hue wheel (HLS, high lightness, moderate
-    saturation) based on the order modules appear in root_layers.
+    Hues are spread evenly across 0.0-0.85 of the hue wheel (terracotta →
+    ochre → sage → dusty teal → muted violet), skipping the 0.85-1.0 cyan/
+    electric-blue range. Lower lightness (0.80) and saturation (0.40) give a
+    clay-like quality instead of candy pastels.
     Does not modify the input dict.
     """
     root_modules = [m for row in layers["root_layers"] for m in row]
     n = len(root_modules)
     module_colors: dict[str, str] = {}
     for i, module in enumerate(root_modules):
-        h = i / n if n > 1 else 0.0
-        r, g, b = colorsys.hls_to_rgb(h, 0.85, 0.55)
+        h = (i / n if n > 1 else 0.0) * 0.85  # stay in earthy hue range
+        r, g, b = colorsys.hls_to_rgb(h, 0.80, 0.40)
         module_colors[module] = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
 
     # Shallow-copy each submodule dict — only 'color' is being replaced, and all
