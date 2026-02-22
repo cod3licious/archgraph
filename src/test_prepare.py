@@ -277,6 +277,12 @@ def test_flatten_empty_submodule_layers():
     assert result == ["main", "api"]
 
 
+def test_flatten_does_not_modify_input():
+    layers = deepcopy(LAYERS)
+    flatten_layers(layers)
+    assert layers == LAYERS
+
+
 # ---------------------------------------------------------------------------
 # validate_unit_paths
 # ---------------------------------------------------------------------------
@@ -327,6 +333,15 @@ def test_validate_both_errors_logged(caplog):
     _, caplog = _capture(validate_unit_paths, units, ALL_SM, caplog=caplog)
     assert "Unit Is Submodule: api.routes" in caplog.text
     assert "Unknown Submodule: bad.mod.f" in caplog.text
+
+
+def test_validate_does_not_modify_inputs(caplog):
+    units = {"api.routes.f": {"submodule": "api.routes", "name": "f", "description": "", "dependencies": {}}}
+    original_units = deepcopy(units)
+    original_sm = list(ALL_SM)
+    _capture(validate_unit_paths, units, ALL_SM, caplog=caplog)
+    assert units == original_units
+    assert original_sm == ALL_SM
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +400,16 @@ def test_create_submodules_units_are_short_names(caplog):
 def test_create_submodules_empty_unit_list_for_missing_submodule(caplog):
     result, _ = _capture(create_submodules_dict, ["api.routes"], {}, caplog=caplog)
     assert result["api.routes"]["units"] == []
+
+
+def test_create_submodules_does_not_modify_inputs(caplog):
+    all_submodules = ["api.routes", "db.commands"]
+    unit_order = {"api.routes": ["get_samples"]}
+    original_sm = list(all_submodules)
+    original_uo = deepcopy(unit_order)
+    _capture(create_submodules_dict, all_submodules, unit_order, caplog=caplog)
+    assert all_submodules == original_sm
+    assert unit_order == original_uo
 
 
 # ---------------------------------------------------------------------------

@@ -145,30 +145,29 @@ def resolve_dependencies(units: dict) -> dict:
        with a WARNING; deduplicates if the parent was already listed.
     4. Unresolvable → ERROR logged, removed.
 
-    Does not modify the input dict (works on a deepcopy).
+    Shallow-copies each unit dict, replacing only the 'dependencies' value.
     O(U * D) where U = units, D = max dependencies per unit.
     """
-    result = deepcopy(units)
-    unit_paths = set(units)
     error_count = 0
+    result: dict[str, dict] = {}
 
-    for unit_path, unit in result.items():
+    for unit_path, unit in units.items():
         resolved: dict[str, bool] = {}
         for dep in unit["dependencies"]:
             if dep == unit_path:
                 continue  # silent self-dep removal
-            if dep in unit_paths:
+            if dep in units:
                 resolved[dep] = True
             else:
                 # Try stripping the last segment (e.g. Model.predict → Model)
                 parent = dep.rsplit(".", 1)[0] if "." in dep else None
-                if parent and parent in unit_paths:
+                if parent and parent in units:
                     logger.warning(f"{unit_path} dependency {dep} was matched to {parent}")
                     resolved.setdefault(parent, True)  # deduplicates multiple sub-refs
                 else:
                     logger.error(f"Referenced Unit Unknown: {unit_path} depends on {dep}, which could not be resolved")
                     error_count += 1
-        unit["dependencies"] = resolved
+        result[unit_path] = {**unit, "dependencies": resolved}
 
     logger.info(f"Dependency resolution completed with {error_count} error(s)")
     return result
