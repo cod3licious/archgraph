@@ -21,10 +21,10 @@ def parse_unit_descriptions(unit_descriptions: str) -> tuple[dict, dict]:
         unit_path = header.strip()
         description = body.strip()
 
-        if "." not in unit_path:
-            raise ValueError(f"Unit path has no dot separator: {unit_path!r}")
         if unit_path in units:
             raise ValueError(f"Duplicate unit path: {unit_path}")
+        if "." not in unit_path:
+            raise ValueError(f"Unit path has no dot separator: {unit_path!r}")
 
         dot = unit_path.rfind(".")
         submodule, name = unit_path[:dot], unit_path[dot + 1 :]
@@ -55,23 +55,24 @@ def flatten_layers(layers: dict) -> list[str]:
     submodule_layers: dict[str, list[list[str]]] = layers["submodule_layers"]
 
     all_submodules: list[str] = []
+    seen: set[str] = set()
+
+    def _add(sm: str) -> None:
+        if sm in seen:
+            raise ValueError(f"Duplicate submodule: '{sm}'")
+        seen.add(sm)
+        all_submodules.append(sm)
+
     for root_row in root_layers:
         for module in root_row:
             if module not in submodule_layers:
-                # leaf module — treat the module itself as the single submodule
-                all_submodules.append(module)
+                _add(module)
             else:
                 for sub_row in submodule_layers[module]:
                     for sm in sub_row:
                         if not sm.startswith(module + "."):
                             raise ValueError(f"Submodule '{sm}' does not start with parent module '{module}'")
-                        all_submodules.append(sm)
-
-    seen: set[str] = set()
-    for sm in all_submodules:
-        if sm in seen:
-            raise ValueError(f"Duplicate submodule: '{sm}'")
-        seen.add(sm)
+                        _add(sm)
 
     return all_submodules
 
@@ -128,10 +129,9 @@ def assign_submodule_colors(submodules: dict, layers: dict) -> dict:
         r, g, b = colorsys.hls_to_rgb(h, 0.85, 0.55)
         module_colors[module] = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
 
-    result = deepcopy(submodules)
-    for sm_data in result.values():
-        sm_data["color"] = module_colors.get(sm_data["module"], "#D3D3D3")
-    return result
+    # Shallow-copy each submodule dict — only 'color' is being replaced, and all
+    # other values (units list, dependencies dict) are not mutated here.
+    return {sm: {**sm_data, "color": module_colors.get(sm_data["module"], "#D3D3D3")} for sm, sm_data in submodules.items()}
 
 
 def resolve_dependencies(units: dict) -> dict:
@@ -173,28 +173,19 @@ def resolve_dependencies(units: dict) -> dict:
     return result
 
 
-def _build_allowed_set(layers: dict) -> dict[str, set[str]]:
-    """Build allowed_deps[sm] = set of submodules that sm may depend on.
+def _build_sm_info(layers: dict) -> dict[str, tuple[int, int, str]]:
+    """Map each submodule → (root_row_idx, intra_row_idx, root_module).
 
-    Rules derived from root_layers and submodule_layers:
-    - A submodule may depend on any submodule in a *strictly lower* root-layer row.
-    - Within the same root module, a submodule may depend on any submodule in a
-      *strictly lower* intra-module row.
-    - A submodule may always depend on itself (intra-submodule calls).
+    root_row_idx:  position of this submodule's root module in root_layers.
+    intra_row_idx: position of this submodule's row within its root module's
+                   submodule_layers (leaf modules get index 0).
+    root_module:   the top-level module name.
 
-    Built in O(S²) worst case but with S submodules — acceptable for large
-    codebases since S is bounded by the architecture, not the number of units.
-    Returns a dict for O(1) per-dependency lookup in check_layer_violations.
+    Built in O(S). Used by check_layer_violations for O(1) per-dep checks.
     """
     root_layers: list[list[str]] = layers["root_layers"]
     submodule_layers: dict[str, list[list[str]]] = layers["submodule_layers"]
-
-    # Map each submodule → (root_row_index, intra_row_index, root_module)
-    # root_row_index: position of the module's root module in root_layers
-    # intra_row_index: position of the submodule's row within its root module's
-    #                  submodule_layers (leaf modules get index 0)
     sm_info: dict[str, tuple[int, int, str]] = {}
-
     for root_row_idx, root_row in enumerate(root_layers):
         for module in root_row:
             if module not in submodule_layers:
@@ -203,42 +194,43 @@ def _build_allowed_set(layers: dict) -> dict[str, set[str]]:
                 for intra_row_idx, sub_row in enumerate(submodule_layers[module]):
                     for sm in sub_row:
                         sm_info[sm] = (root_row_idx, intra_row_idx, module)
-
-    # For each submodule, compute the set of submodules it is allowed to depend on
-    allowed: dict[str, set[str]] = {}
-    for sm_a, (rr_a, ir_a, root_a) in sm_info.items():
-        allowed_set: set[str] = {sm_a}  # always allowed to depend on itself
-        for sm_b, (rr_b, ir_b, root_b) in sm_info.items():
-            if sm_b == sm_a:
-                continue
-            if rr_b > rr_a:
-                # sm_b is in a strictly lower root layer → allowed
-                allowed_set.add(sm_b)
-            elif rr_b == rr_a and root_a == root_b and ir_b > ir_a:
-                # same root module, sm_b is in a strictly lower intra-module row → allowed
-                allowed_set.add(sm_b)
-        allowed[sm_a] = allowed_set
-
-    return allowed
+    return sm_info
 
 
 def check_layer_violations(units: dict, layers: dict) -> dict:
     """Flag dependencies that violate the layer hierarchy.
 
-    Does not modify the input dict. O(U * D) after the O(S²) setup.
+    A dependency from sm_a → sm_b is allowed iff:
+    - sm_a == sm_b (intra-submodule call), or
+    - sm_b is in a strictly lower root-layer row than sm_a, or
+    - sm_a and sm_b share the same root module AND sm_b is in a strictly lower
+      intra-module row than sm_a.
+
+    Setup is O(S), each dependency check is O(1). Total: O(S + U*D).
+    Does not modify the input dict.
     """
-    allowed = _build_allowed_set(layers)
+    sm_info = _build_sm_info(layers)
     result = deepcopy(units)
 
     for unit_path, unit in result.items():
         sm_a = unit["submodule"]
-        allowed_for_a = allowed.get(sm_a)
+        info_a = sm_info.get(sm_a)
+        if info_a is None:
+            continue
+        rr_a, ir_a, root_a = info_a
         for dep_path in unit["dependencies"]:
             dep_unit = units.get(dep_path)
             if dep_unit is None:
                 continue
             sm_b = dep_unit["submodule"]
-            if allowed_for_a is not None and sm_b not in allowed_for_a:
+            if sm_a == sm_b:
+                continue
+            info_b = sm_info.get(sm_b)
+            if info_b is None:
+                continue
+            rr_b, ir_b, root_b = info_b
+            allowed = rr_b > rr_a or (rr_b == rr_a and root_a == root_b and ir_b > ir_a)
+            if not allowed:
                 print(f"[WARNING] Architecture Validation: {unit_path} must not depend on {dep_path}")
                 unit["dependencies"][dep_path] = False
 
