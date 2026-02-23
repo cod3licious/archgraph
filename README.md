@@ -71,7 +71,9 @@ I don't code a lot by hand these days, but I still care deeply about well-design
 
 After some minor refinements based on Claude's feedback, I implemented the project step by step with Claude Agent in the [Zed IDE](https://zed.dev/) - tests first, then the Python script, then the frontend. The frontend in particular was a lot of fun: having AI in the loop made it easy to iterate on design ideas until we landed on something less cluttered than the typical arrow-heavy diagram. Instead of showing all connections at once, small icons on each box indicate incoming and outgoing dependencies, and the actual lines only appear when you click on a submodule or unit.
 
-The whole implementation took one weekend: about 1.5 days writing the sketch document and a few hours instructing Claude (Sonnet 4.6). Without a pro plan it would have cost me around $12 in tokens - definitely worth it!
+In multiple places, Claude's implementation was also more efficient than what I initially came up with: For example, my naive idea for checking architectural layer violations would have required $O(n^2)$ memory, while Claude later came up with a solution that only needed $O(n)$. Could I have come up with a better solution myself? Maybe. But most definitely not in the time it took me to write "Check if anything could be refactored to improve performance." And for a side project like this I probably wouldn't have bothered.
+
+The whole project took one weekend: about 1.5 days writing the sketch document and a few hours instructing Claude (Sonnet 4.6). Without a pro plan it would have cost me around $15 in tokens - definitely worth it!
 
 
 ## Using ArchGraph with your own codebase
