@@ -305,7 +305,7 @@ Executes a SELECT query and returns all matching rows as a list of dicts. Applie
 Executes an INSERT, UPDATE, or DELETE statement. Returns the number of affected rows. Manages auto-commit for single-statement operations.
 
 ### core.db.execute_in_transaction
-Executes a list of SQL statements atomically within a single transaction. Rolls back on any exception and re-raises.
+Executes a list of SQL statements atomically within a single transaction. Checks `@core.cache.exists` for an advisory lock key before acquiring the connection, to avoid contention on high-traffic tables. Rolls back on any exception and re-raises.
 
 ### core.db.get_connection
 Acquires a raw connection from the pool for advanced use cases. Callers are responsible for commit/rollback and return.
