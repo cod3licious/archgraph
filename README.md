@@ -73,17 +73,17 @@ After some minor refinements based on Claude's feedback, I implemented the proje
 
 **What I decided on my own:**
 
-- **Input files:** External inputs to a system are often produced by processes outside of our control. In this case, I liked the markdown format that I used to produce my sketches, so the implementation just had to handle this format.
-- **Final product:** The interactive visualization has to serve my needs as a user. While I explored a couple of different options together with the AI, it was ultimately my decision which visualization I found the most useful.
+- **Input files:** External inputs are often produced by processes outside our control. I liked the markdown format I was already using for my sketches, so the implementation just had to handle that.
+- **Final product:** The interactive visualization has to serve my needs as a user. I explored a few options with the AI, but it was ultimately my call which one I found most useful.
 
 **Where I asked AI for feedback:**
 
-- **Interface / immediate data structures:** Interfaces and the data structures they exchange are among the most important decisions you'll make when building software, since changing them later can create a lot of work, especially if you also need to migrate existing data to the new format. In this case, the exact shape of `results.json` determined both how easy the frontend could create the visualization I wanted and what steps the Python script needed to execute to transform the input data accordingly. I figured a few of these things out on my own based on what I knew I wanted to see in the frontend, but since I don't know much about web development, I conferred with my AI agent whether this format would be sufficient.
-- **Software design:** How you decompose your software into individual submodules and units is another big decision. For the Python script, I created a draft for this in the `sketch.md` document based on the steps I knew had to be taken to create all the data we needed for the final results and knowing which functionality I might want to reuse somewhere else later. Then I asked AI for feedback and it suggested some better names and pointed out some other details.
+- **Interface / intermediate data structures:** These are among the most important decisions in software, since changing them later — especially if you need to migrate existing data — can be a lot of work. In this case, the shape of `result.json` determined both how easily the frontend could render the visualization and what steps the Python script needed to take. I figured out the basics from what I knew I wanted to see, but since I don't have much web development experience, I asked my AI agent whether the format would be sufficient.
+- **Software design:** How you decompose software into submodules and units is another big decision. For the Python script, I drafted this in `sketch.md` based on the steps needed to produce the final output and what I might want to reuse later. The AI suggested better names and flagged a few details I'd missed.
 
-**What I left up to the AI (provided with some general guidelines):**
+**What I left up to the AI (with some general guidelines):**
 
-- **Implementation details:** While my sketch document already provided a lot of pseudocode for the individual functions (e.g., invariants and how to handle some edge cases), how this should be translated into actual code was left up to the AI (for example, I'm really glad I don't need to search StackOverflow on how to create n colors on a spectrum and then convert them to hexcodes). However, I did provide some general guidelines on what I consider to be good code in an AGENTS.md file to give the AI some guardrails.
+- **Implementation details:** My sketch already contained a lot of pseudocode covering invariants and edge cases, but how to translate that into actual code was left to the AI (and I'm genuinely glad I didn't have to look up how to generate n evenly-spaced colors and convert them to hex). However, I did provide general coding guidelines in an `AGENTS.md` file to give it some guardrails.
 
 In multiple places, Claude's implementation was also more efficient than what I initially came up with: For example, my naive idea for checking architectural layer violations would have required $O(n^2)$ memory, while Claude later came up with a solution that only needed $O(n)$. Could I have come up with a better solution myself? Maybe. But most definitely not in the time it took me to write "Check if anything could be refactored to improve performance." And for a side project like this I probably wouldn't have bothered.
 
