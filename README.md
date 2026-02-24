@@ -9,9 +9,9 @@ While other tools exist to visualize codebases written in a specific programming
 
 ## How it works
 
-1. **`layers.json`** — defines the module hierarchy and their allowed dependency directions as a two-level layer structure (root modules → submodules). Dependencies must flow strictly downward through the layers; anything that points back up is flagged as a violation.
+1. **`layers.json`** — defines the module hierarchy and their allowed dependency directions as a two-level layer structure (root modules → submodules). Dependencies must flow strictly downward through the layers; anything that points back up or sideways is flagged as a violation.
 
-2. **`units.md`** — describes every unit (function, class, method) in plain prose. Dependencies are declared inline using backtick-at notation: `` `@submodule.UnitName` ``. ArchGraph extracts these automatically.
+2. **`units.md`** — describes every unit (function / class) in plain prose. Dependencies are declared inline using backtick-at notation: `` `@submodule.UnitName` ``. ArchGraph extracts these automatically.
 
 3. **`prepare.py`** — reads both files, resolves all dependencies, validates them against the layer hierarchy, and writes `result.json`.
 
@@ -33,7 +33,7 @@ archgraph/
 
 ### Running the data pipeline
 
-Requires [uv](https://docs.astral.sh/uv/).
+It is recommended to use [uv](https://docs.astral.sh/uv/) to run the script in a virtual environment, but `python` instead of `uv run` in the below commands should work as well, since the script only depends on standard libraries.
 
 **Process a folder** containing `layers.json` and `units.md`:
 
@@ -67,9 +67,23 @@ python -m http.server 8000 --directory src
 
 ## How I created this project with AI
 
-I don't code a lot by hand these days, but I still care deeply about well-designed software. I follow my [Clarity-Driven Development approach](https://franziskahorn.de/articles/2026-01-cdd-humans-ai), where you first think through the Why, What, and How and capture it in sketch documents like [`sketch.md`](sketch.md) before writing a single line of code.
+I don't code a lot by hand anymore these days, but I still care deeply about well-designed software. I follow my [Clarity-Driven Development approach](https://franziskahorn.de/articles/2026-01-cdd-humans-ai), where you first think through the Why, What, and How and capture it in sketch documents like [`sketch.md`](sketch.md) before writing a single line of code.
 
 After some minor refinements based on Claude's feedback, I implemented the project step by step with Claude Agent in the [Zed IDE](https://zed.dev/) - tests first, then the Python script, then the frontend. The frontend in particular was a lot of fun: having AI in the loop made it easy to iterate on design ideas until we landed on something less cluttered than the typical arrow-heavy diagram. Instead of showing all connections at once, small icons on each box indicate incoming and outgoing dependencies, and the actual lines only appear when you click on a submodule or unit.
+
+**What I decided on my own:**
+
+- **Input files:** External inputs to a system are often produced by processes outside of our control. In this case, I liked the markdown format that I used to produce my sketches, so the implementation just had to handle this format.
+- **Final product:** The interactive visualization has to serve my needs as a user. While I explored a couple of different options together with the AI, it was ultimately my decision which visualization I found the most useful.
+
+**Where I asked AI for feedback:**
+
+- **Interface / immediate data structures:** Interfaces and the data structures they exchange are among the most important decisions you'll make when building software, since changing them later can create a lot of work, especially if you also need to migrate existing data to the new format. In this case, the exact shape of `results.json` determined both how easy the frontend could create the visualization I wanted and what steps the Python script needed to execute to transform the input data accordingly. I figured a few of these things out on my own based on what I knew I wanted to see in the frontend, but since I don't know much about web development, I conferred with my AI agent whether this format would be sufficient.
+- **Software design:** How you decompose your software into individual submodules and units is another big decision. For the Python script, I created a draft for this in the `sketch.md` document based on the steps I knew had to be taken to create all the data we needed for the final results and knowing which functionality I might want to reuse somewhere else later. Then I asked AI for feedback and it suggested some better names and pointed out some other details.
+
+**What I left up to the AI (provided with some general guidelines):**
+
+- **Implementation details:** While my sketch document already provided a lot of pseudocode for the individual functions (e.g., invariants and how to handle some edge cases), how this should be translated into actual code was left up to the AI (for example, I'm really glad I don't need to search StackOverflow on how to create n colors on a spectrum and then convert them to hexcodes). However, I did provide some general guidelines on what I consider to be good code in an AGENTS.md file to give the AI some guardrails.
 
 In multiple places, Claude's implementation was also more efficient than what I initially came up with: For example, my naive idea for checking architectural layer violations would have required $O(n^2)$ memory, while Claude later came up with a solution that only needed $O(n)$. Could I have come up with a better solution myself? Maybe. But most definitely not in the time it took me to write "Check if anything could be refactored to improve performance." And for a side project like this I probably wouldn't have bothered.
 
@@ -118,7 +132,7 @@ Paste the following prompt into your AI agent of choice (Claude, GPT-4, Gemini, 
 
 > I want you to analyse this codebase and produce two files for a tool called ArchGraph.
 >
-> **File 1 — `layers.json`**
+> **File 1: `layers.json`**
 >
 > Identify the top-level modules and how they depend on each other. Group them into a strict layered hierarchy where dependencies only flow downward (higher-level modules call lower-level ones, never the reverse). Represent this as a JSON object:
 >
@@ -146,9 +160,9 @@ Paste the following prompt into your AI agent of choice (Claude, GPT-4, Gemini, 
 >
 > These layers should describe the **desired** dependency hierarchy; our existing codebase might violate these rules, so focus more on how things should be instead of the actual dependencies you find in the code.
 >
-> **File 2 — `units.md`**
+> **File 2: `units.md`**
 >
-> For every significant unit in the codebase (public function, class, or method worth documenting), write a `### ` section. The heading must be the full dot-path: `submodule.UnitName`. The body is one to three sentences describing what the unit does. Inline every dependency on another unit using backtick-at notation: `` `@submodule.OtherUnit` ``.
+> For every significant unit in the codebase (public function or class worth documenting), write a `### ` section. The heading must be the full dot-path: `submodule.UnitName`. The body is one to three sentences describing what the unit does. Inline every dependency on another unit using backtick-at notation: `` `@submodule.OtherUnit` ``.
 >
 > ```markdown
 > ### payments.gateway.charge
@@ -158,7 +172,7 @@ Paste the following prompt into your AI agent of choice (Claude, GPT-4, Gemini, 
 > ```
 >
 > Rules:
-> - Only reference units that you have also described with their own `### ` heading.
+> - Only reference units that are also described with their own `### ` heading.
 > - Use the exact submodule path from `layers.json` as the prefix.
 > - It is fine to omit purely internal helper units; focus on the public interface of each submodule.
 > - Each unit heading must be exactly `submodule.UnitName` — two segments joined by the last dot. `services.ml.Model` is a valid heading (submodule `services.ml`, name `Model`). Do **not** write method names as headings (e.g. `services.ml.Model.predict` is wrong — it would be parsed as submodule `services.ml.Model`, which does not exist). If you want to reference a specific method as a dependency, use `` `@services.ml.Model.predict` `` in the body text; it will be resolved to the parent unit `services.ml.Model` automatically.
