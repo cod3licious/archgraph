@@ -251,8 +251,12 @@ def format_units_md(
     return "\n".join(lines)
 
 
-def generate_layers_draft(symbol_index: dict[str, UnitInfo]) -> dict:
+def generate_layers_draft(symbol_index: dict[str, UnitInfo]) -> tuple[dict, set[str]]:
     """Generate a draft layers.json with modules/submodules in alphabetical order.
+
+    Returns (layers_dict, valid_submodules). The valid_submodules set contains
+    exactly the submodules that appear in the flattened layers — use it to filter
+    units.md so both files stay consistent.
 
     Each module and submodule gets its own row. The user is expected to reorder
     rows and merge siblings to express the intended dependency hierarchy.
@@ -266,19 +270,38 @@ def generate_layers_draft(symbol_index: dict[str, UnitInfo]) -> dict:
 
     root_layers = [[m] for m in sorted(root_modules)]
 
-    # Only add submodule_layers for root modules that have actual submodules
+    # Only add submodule_layers for root modules that have actual submodules.
+    # If units exist directly at the root level (e.g. from __init__.py), the module
+    # must stay a leaf — prepare.py doesn't support mixing root-level units with
+    # submodule_layers.
     submodule_layers: dict[str, list[list[str]]] = {}
+    valid_submodules: set[str] = set()
     for root in sorted(root_modules):
-        sms = sorted(sm for sm in submodules if sm.startswith(root + ".") or sm == root)
-        # If the only "submodule" is the root itself, skip (it's a leaf)
-        if sms == [root]:
-            continue
-        # Filter out the bare root module name — only include dotted submodules
-        sub_rows = [[sm] for sm in sms if "." in sm]
-        if sub_rows:
-            submodule_layers[root] = sub_rows
+        has_root_units = root in submodules
+        nested = sorted(sm for sm in submodules if sm.startswith(root + "."))
+        if nested and not has_root_units:
+            submodule_layers[root] = [[sm] for sm in nested]
+            valid_submodules.update(nested)
+        else:
+            # Leaf module: only the root name is a valid submodule
+            valid_submodules.add(root)
 
-    return {"root_layers": root_layers, "submodule_layers": submodule_layers}
+    layers = {"root_layers": root_layers, "submodule_layers": submodule_layers}
+    return layers, valid_submodules
+
+
+def filter_to_valid_submodules(
+    symbol_index: dict[str, UnitInfo],
+    valid_submodules: set[str],
+) -> dict[str, UnitInfo]:
+    """Remove units whose submodule is not in the valid set."""
+    filtered: dict[str, UnitInfo] = {}
+    for qname, unit in symbol_index.items():
+        if unit.submodule in valid_submodules:
+            filtered[qname] = unit
+        else:
+            logger.warning(f"Dropping {qname}: submodule {unit.submodule} not in layers")
+    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +335,10 @@ if __name__ == "__main__":
     )
     logger.info(f"Found {len(symbol_index)} units across {len(import_map)} modules")
 
+    # Generate layers first, then filter units to match
+    draft, valid_submodules = generate_layers_draft(symbol_index)
+    symbol_index = filter_to_valid_submodules(symbol_index, valid_submodules)
+
     deps = resolve_dependencies(symbol_index, import_map)
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -321,6 +348,5 @@ if __name__ == "__main__":
     logger.info(f"Wrote {units_path}")
 
     layers_path = args.output / "layers.json"
-    draft = generate_layers_draft(symbol_index)
     layers_path.write_text(json.dumps(draft, indent=2) + "\n", encoding="utf-8")
     logger.info(f"Wrote {layers_path}")

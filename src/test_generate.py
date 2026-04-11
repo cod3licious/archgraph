@@ -11,6 +11,7 @@ from generate import (
     UnitInfo,
     build_index,
     file_path_to_module,
+    filter_to_valid_submodules,
     format_units_md,
     generate_layers_draft,
     parse_file,
@@ -25,7 +26,7 @@ from languages import (
     _resolve_relative_import,
     register_languages,
 )
-from prepare import parse_unit_descriptions
+from prepare import flatten_layers, parse_unit_descriptions
 
 PY_CONFIG = _make_python_config()
 PY_LANG = ts.Language(tspython.language())
@@ -431,13 +432,11 @@ def test_layers_draft_basic():
         "api.auth.check": UnitInfo("api.auth.check", "api.auth", "check", "function"),
         "core.db.query": UnitInfo("core.db.query", "core.db", "query", "function"),
     }
-    draft = generate_layers_draft(si)
+    draft, valid = generate_layers_draft(si)
     assert draft["root_layers"] == [["api"], ["core"]]
-    assert "api" in draft["submodule_layers"]
-    assert "core" in draft["submodule_layers"]
-    # Submodules sorted alphabetically, one per row
     assert draft["submodule_layers"]["api"] == [["api.auth"], ["api.routes"]]
     assert draft["submodule_layers"]["core"] == [["core.db"]]
+    assert valid == {"api.auth", "api.routes", "core.db"}
 
 
 def test_layers_draft_leaf_module():
@@ -445,9 +444,44 @@ def test_layers_draft_leaf_module():
     si = {
         "utils.helper": UnitInfo("utils.helper", "utils", "helper", "function"),
     }
-    draft = generate_layers_draft(si)
+    draft, valid = generate_layers_draft(si)
     assert draft["root_layers"] == [["utils"]]
     assert "utils" not in draft["submodule_layers"]
+    assert valid == {"utils"}
+
+
+def test_layers_draft_root_with_direct_units_stays_leaf():
+    """When a root module has both direct units and submodules, it must stay a leaf.
+
+    prepare.py doesn't support units at the root level when submodule_layers exist
+    (e.g. units from __init__.py alongside deeper submodules).
+    """
+    si = {
+        "pkg.init_func": UnitInfo("pkg.init_func", "pkg", "init_func", "function"),
+        "pkg.sub.deep_func": UnitInfo("pkg.sub.deep_func", "pkg.sub", "deep_func", "function"),
+    }
+    draft, valid = generate_layers_draft(si)
+    assert draft["root_layers"] == [["pkg"]]
+    assert "pkg" not in draft["submodule_layers"]
+    # Only the leaf root is valid; pkg.sub is dropped
+    assert valid == {"pkg"}
+
+
+def test_layers_draft_filter_keeps_consistency():
+    """filter_to_valid_submodules drops units whose submodule isn't in layers."""
+    si = {
+        "pkg.init_func": UnitInfo("pkg.init_func", "pkg", "init_func", "function"),
+        "pkg.sub.deep_func": UnitInfo("pkg.sub.deep_func", "pkg.sub", "deep_func", "function"),
+        "other.sub.func": UnitInfo("other.sub.func", "other.sub", "func", "function"),
+    }
+    draft, valid = generate_layers_draft(si)
+    filtered = filter_to_valid_submodules(si, valid)
+    flat = flatten_layers(draft)
+    # Every remaining unit's submodule must be in the flattened list
+    for unit in filtered.values():
+        assert unit.submodule in flat, f"{unit.submodule} not in flattened layers"
+    # pkg.sub.deep_func should have been dropped (pkg is a leaf)
+    assert "pkg.sub.deep_func" not in filtered
 
 
 def test_layers_draft_valid_json():
@@ -456,8 +490,7 @@ def test_layers_draft_valid_json():
         "a.b.func": UnitInfo("a.b.func", "a.b", "func", "function"),
         "c.func": UnitInfo("c.func", "c", "func", "function"),
     }
-    draft = generate_layers_draft(si)
-    # Should round-trip through JSON
+    draft, _valid = generate_layers_draft(si)
     assert json.loads(json.dumps(draft)) == draft
 
 
