@@ -27,8 +27,11 @@ archgraph/
 │   ├── layers.json       # example e-commerce layer hierarchy
 │   └── units.md          # example e-commerce unit descriptions
 └── src/
+    ├── generate.py       # auto-generate units.md from a codebase via tree-sitter
+    ├── languages.py      # language-specific tree-sitter configs (Python, extensible)
     ├── prepare.py        # data processing pipeline
-    ├── test_prepare.py   # unit tests
+    ├── test_generate.py  # tests for generate.py
+    ├── test_prepare.py   # tests for prepare.py
     ├── result.json       # output of prepare.py (read by the frontend)
     └── index.html        # interactive graph visualization
 ```
@@ -96,7 +99,7 @@ The whole project took one weekend: about 1.5 days writing the sketch document a
 
 The two input files can describe any codebase. When designing a new software project, it always helps me to sketch out the individual functions and classes this way — and now I can also visualize the result to get a better feeling for what the final implementation would look like. 
 
-If you want to visualize an existing project, instead of creating these documents manually, you can ask an AI agent to generate them by analyzing your codebase. But please note that, unlike a programmatic, deterministic code analyzer, the AI might miss things or get things wrong, so you should double check the results.
+If you want to visualize an existing project, you can either generate the necessary input files using the `generate.py` script (using the tree-sitter library; currently only available for Python packages) or with the help of an AI agent.
 
 ### File formats
 
@@ -127,9 +130,39 @@ Creates a new order record. Calls `@services.catalog.get_product` to validate
 line items and `@core.db.execute` to persist the order.
 ```
 
-### AI prompt for generating input files from your codebase
 
-Paste the following prompt into your AI agent of choice (Claude, GPT-4, Gemini, etc.) after giving it access to your repository:
+### Auto-generating input files with `generate.py`
+
+`generate.py` uses [tree-sitter](https://tree-sitter.github.io/) to deterministically extract public functions, classes, their docstrings, and cross-module dependencies from a codebase. It writes both `units.md` and a draft `layers.json` (with modules listed alphabetically for you to reorder) into the specified output folder. Currently Python is supported out of the box; see below for how to add other languages.
+
+```bash
+uv run src/generate.py --root /path/to/your/package --output my_project_data/
+```
+
+Additional options:
+- `--include-private` - include private symbols (e.g., `_`-prefixed in Python; excluded by default)
+- `--exclude "test_*,conftest*"` - comma-separated glob patterns for filenames to skip
+
+Currently only Python is supported. Adding a new language requires three steps in `src/languages.py`:
+
+1. **Write a config factory** (e.g., `_make_javascript_config()`) that returns a `LanguageConfig` with:
+   - `extensions` / `package_filenames` — file extensions and directory-level filenames (e.g., `{"js", "jsx"}` / `{"index"}`)
+   - `function_node_types` / `class_node_types` — tree-sitter AST node types for definitions
+   - `docstring_extractor` — a function that extracts a docstring from a definition node (e.g., JSDoc comments, Javadoc)
+   - `import_extractor` — a function that extracts imports as `ImportInfo(local_name, qualified_name)` from a module AST
+   - `call_extractor` — a function that extracts raw call target strings from a body node
+2. **Install the grammar** — add the corresponding `tree-sitter-<language>` package to the `generate` dependency group in `pyproject.toml`.
+3. **Register it** — add an entry in `register_languages()`.
+
+The main script (`generate.py`) is fully language-agnostic: it uses the config to parse files, then resolves dependencies by checking which calls land in the project's symbol index.
+
+### Using an AI agent
+
+Alternatively, you can ask an AI agent to generate both files by analyzing your codebase. This can produce richer descriptions but is non-deterministic -- the AI might miss things or get things wrong, so you should double check the results.
+
+#### AI prompt for generating input files from your codebase
+
+Paste the following prompt into your AI agent of choice (Claude, Codex, Gemini, etc.) after giving it access to your repository:
 
 
 > I want you to analyse this codebase and produce two files for a tool called ArchGraph.

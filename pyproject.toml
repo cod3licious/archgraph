@@ -8,11 +8,16 @@ dependencies = [
 ]
 
 [dependency-groups]
+generate = [
+    "tree-sitter>=0.24",
+    "tree-sitter-python>=0.24",
+]
 dev = [
     "pre-commit>=4.0.1",
     "pytest>=7.4.0",
     "ruff>=0.14.6",
     "ty>=0.0.18",
+    {include-group = "generate"},
 ]
 
 [tool.uv]
