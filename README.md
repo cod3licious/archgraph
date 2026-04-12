@@ -133,7 +133,9 @@ line items and `@core.db.execute` to persist the order.
 
 ### Auto-generating input files with `generate.py`
 
-`generate.py` uses [tree-sitter](https://tree-sitter.github.io/) to deterministically extract public functions, classes, their docstrings, and cross-module dependencies from a codebase. It writes both `units.md` and a draft `layers.json` (with modules listed alphabetically for you to reorder) into the specified output folder. Currently Python is supported out of the box; see below for how to add other languages.
+`generate.py` uses [tree-sitter](https://tree-sitter.github.io/) to deterministically extract public functions, classes, their docstrings, and cross-module dependencies from a codebase. It writes both `units.md` and a draft `layers.json` into the specified output folder. The (sub)modules in the layers draft are sorted by dependency flow using topological sorting: modules that depend on others (consumers) are placed at the top, modules that are depended upon (providers) at the bottom, and isolated modules with no connections at the very bottom. This gives a reasonable starting point that you should then adapt to represent the target architecture. 
+
+Currently Python is supported out of the box; see below for how to add other languages.
 
 ```bash
 uv run src/generate.py --root /path/to/your/package --output my_project_data/

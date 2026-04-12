@@ -251,8 +251,80 @@ def format_units_md(
     return "\n".join(lines)
 
 
-def generate_layers_draft(symbol_index: dict[str, UnitInfo]) -> tuple[dict, set[str]]:
-    """Generate a draft layers.json with modules/submodules in alphabetical order.
+def _aggregate_deps_by(
+    symbol_index: dict[str, UnitInfo],
+    dependencies: dict[str, list[str]],
+    key_fn,
+) -> dict[str, set[str]]:
+    """Aggregate unit-level dependencies to a coarser grouping defined by key_fn.
+
+    key_fn(UnitInfo) -> grouping key (e.g. submodule or root module).
+    Returns {group: set of groups it depends on} (self-deps excluded).
+    """
+    graph: dict[str, set[str]] = {}
+    for qname, dep_list in dependencies.items():
+        src = key_fn(symbol_index[qname])
+        graph.setdefault(src, set())
+        for dep_qname in dep_list:
+            if dep_qname in symbol_index:
+                dst = key_fn(symbol_index[dep_qname])
+                if dst != src:
+                    graph[src].add(dst)
+    return graph
+
+
+def _dep_sorted(items: list[str], dep_graph: dict[str, set[str]]) -> list[str]:
+    """Sort items by dependency flow: consumers at top, providers at bottom.
+
+    Uses Kahn's topological sort (alphabetical tiebreak) for a perfect ordering
+    when the graph is a DAG. Nodes involved in cycles fall back to a net-flow
+    heuristic. Isolated nodes (no edges at all) are placed at the very bottom.
+    """
+    item_set = set(items)
+    edges = {i: dep_graph.get(i, set()) & item_set for i in items}
+    in_deg = dict.fromkeys(items, 0)
+    for targets in edges.values():
+        for t in targets:
+            in_deg[t] += 1
+
+    # Separate isolated nodes (no connections) — they go to the bottom
+    connected = [i for i in items if edges[i] or in_deg[i] > 0]
+    isolated = sorted(i for i in items if not edges[i] and in_deg[i] == 0)
+
+    # Kahn's algorithm on connected nodes
+    queue = sorted(i for i in connected if in_deg[i] == 0)
+    result: list[str] = []
+    while queue:
+        node = queue.pop(0)
+        result.append(node)
+        for t in sorted(edges[node]):
+            in_deg[t] -= 1
+            if in_deg[t] == 0:
+                queue.append(t)
+                queue.sort()
+
+    # Remaining connected nodes are in cycles — rank by net flow
+    if len(result) < len(connected):
+        placed = set(result)
+        rest = [i for i in connected if i not in placed]
+        out_deg = {i: len(edges[i] - placed) for i in rest}
+        rest_in = dict.fromkeys(rest, 0)
+        rest_set = set(rest)
+        for i in rest:
+            for t in edges[i] & rest_set:
+                rest_in[t] += 1
+        rest.sort(key=lambda i: (-(out_deg[i] - rest_in[i]), -rest_in[i], i))
+        result.extend(rest)
+
+    result.extend(isolated)
+    return result
+
+
+def generate_layers_draft(
+    symbol_index: dict[str, UnitInfo],
+    dependencies: dict[str, list[str]],
+) -> tuple[dict, set[str]]:
+    """Generate a draft layers.json ordered by dependency flow.
 
     Returns (layers_dict, valid_submodules). The valid_submodules set contains
     exactly the submodules that appear in the flattened layers — use it to filter
@@ -268,7 +340,11 @@ def generate_layers_draft(symbol_index: dict[str, UnitInfo]) -> tuple[dict, set[
         submodules.add(unit.submodule)
         root_modules.add(unit.submodule.split(".")[0])
 
-    root_layers = [[m] for m in sorted(root_modules)]
+    # Aggregate deps to submodule and root-module level
+    sm_deps = _aggregate_deps_by(symbol_index, dependencies, lambda u: u.submodule)
+    root_deps = _aggregate_deps_by(symbol_index, dependencies, lambda u: u.submodule.split(".")[0])
+
+    root_layers = [[m] for m in _dep_sorted(list(root_modules), root_deps)]
 
     # Only add submodule_layers for root modules that have actual submodules.
     # If units exist directly at the root level (e.g. from __init__.py), the module
@@ -278,9 +354,9 @@ def generate_layers_draft(symbol_index: dict[str, UnitInfo]) -> tuple[dict, set[
     valid_submodules: set[str] = set()
     for root in sorted(root_modules):
         has_root_units = root in submodules
-        nested = sorted(sm for sm in submodules if sm.startswith(root + "."))
+        nested = [sm for sm in submodules if sm.startswith(root + ".")]
         if nested and not has_root_units:
-            submodule_layers[root] = [[sm] for sm in nested]
+            submodule_layers[root] = [[sm] for sm in _dep_sorted(nested, sm_deps)]
             valid_submodules.update(nested)
         else:
             # Leaf module: only the root name is a valid submodule
@@ -335,10 +411,12 @@ if __name__ == "__main__":
     )
     logger.info(f"Found {len(symbol_index)} units across {len(import_map)} modules")
 
-    # Generate layers first, then filter units to match
-    draft, valid_submodules = generate_layers_draft(symbol_index)
+    # Resolve deps on full index, then use them to order the draft
+    deps = resolve_dependencies(symbol_index, import_map)
+    draft, valid_submodules = generate_layers_draft(symbol_index, deps)
     symbol_index = filter_to_valid_submodules(symbol_index, valid_submodules)
 
+    # Re-resolve after filtering so units.md only references valid submodules
     deps = resolve_dependencies(symbol_index, import_map)
 
     args.output.mkdir(parents=True, exist_ok=True)

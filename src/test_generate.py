@@ -432,7 +432,7 @@ def test_layers_draft_basic():
         "api.auth.check": UnitInfo("api.auth.check", "api.auth", "check", "function"),
         "core.db.query": UnitInfo("core.db.query", "core.db", "query", "function"),
     }
-    draft, valid = generate_layers_draft(si)
+    draft, valid = generate_layers_draft(si, {})
     assert draft["root_layers"] == [["api"], ["core"]]
     assert draft["submodule_layers"]["api"] == [["api.auth"], ["api.routes"]]
     assert draft["submodule_layers"]["core"] == [["core.db"]]
@@ -444,7 +444,7 @@ def test_layers_draft_leaf_module():
     si = {
         "utils.helper": UnitInfo("utils.helper", "utils", "helper", "function"),
     }
-    draft, valid = generate_layers_draft(si)
+    draft, valid = generate_layers_draft(si, {})
     assert draft["root_layers"] == [["utils"]]
     assert "utils" not in draft["submodule_layers"]
     assert valid == {"utils"}
@@ -460,7 +460,7 @@ def test_layers_draft_root_with_direct_units_stays_leaf():
         "pkg.init_func": UnitInfo("pkg.init_func", "pkg", "init_func", "function"),
         "pkg.sub.deep_func": UnitInfo("pkg.sub.deep_func", "pkg.sub", "deep_func", "function"),
     }
-    draft, valid = generate_layers_draft(si)
+    draft, valid = generate_layers_draft(si, {})
     assert draft["root_layers"] == [["pkg"]]
     assert "pkg" not in draft["submodule_layers"]
     # Only the leaf root is valid; pkg.sub is dropped
@@ -474,7 +474,7 @@ def test_layers_draft_filter_keeps_consistency():
         "pkg.sub.deep_func": UnitInfo("pkg.sub.deep_func", "pkg.sub", "deep_func", "function"),
         "other.sub.func": UnitInfo("other.sub.func", "other.sub", "func", "function"),
     }
-    draft, valid = generate_layers_draft(si)
+    draft, valid = generate_layers_draft(si, {})
     filtered = filter_to_valid_submodules(si, valid)
     flat = flatten_layers(draft)
     # Every remaining unit's submodule must be in the flattened list
@@ -490,8 +490,144 @@ def test_layers_draft_valid_json():
         "a.b.func": UnitInfo("a.b.func", "a.b", "func", "function"),
         "c.func": UnitInfo("c.func", "c", "func", "function"),
     }
-    draft, _valid = generate_layers_draft(si)
+    draft, _valid = generate_layers_draft(si, {})
     assert json.loads(json.dumps(draft)) == draft
+
+
+def test_layers_draft_dep_ordering():
+    """Modules are sorted by dependency flow: consumers at top, providers at bottom."""
+    si = {
+        "app.main.run": UnitInfo("app.main.run", "app.main", "run", "function"),
+        "app.api.handle": UnitInfo("app.api.handle", "app.api", "handle", "function"),
+        "lib.db.query": UnitInfo("lib.db.query", "lib.db", "query", "function"),
+        "lib.utils.fmt": UnitInfo("lib.utils.fmt", "lib.utils", "fmt", "function"),
+    }
+    # app.main -> app.api -> lib.db; lib.utils has no deps (isolated)
+    deps = {
+        "app.main.run": ["app.api.handle", "lib.db.query"],
+        "app.api.handle": ["lib.db.query"],
+        "lib.db.query": [],
+        "lib.utils.fmt": [],
+    }
+    draft, _ = generate_layers_draft(si, deps)
+
+    # Root level: app depends on lib, so app on top
+    root_order = [m for row in draft["root_layers"] for m in row]
+    assert root_order.index("app") < root_order.index("lib")
+
+    # Within app: main depends on api, so main on top
+    sub_order = [sm for row in draft["submodule_layers"]["app"] for sm in row]
+    assert sub_order.index("app.main") < sub_order.index("app.api")
+
+    # Within lib: db is depended upon (by app), utils is isolated -> utils at bottom
+    sub_order = [sm for row in draft["submodule_layers"]["lib"] for sm in row]
+    assert sub_order.index("lib.db") < sub_order.index("lib.utils")
+
+
+def test_layers_draft_isolated_modules_at_bottom():
+    """Modules with no dependencies (in or out) sort to the very bottom."""
+    si = {
+        "consumer.sub.f": UnitInfo("consumer.sub.f", "consumer.sub", "f", "function"),
+        "provider.sub.g": UnitInfo("provider.sub.g", "provider.sub", "g", "function"),
+        "isolated.sub.h": UnitInfo("isolated.sub.h", "isolated.sub", "h", "function"),
+    }
+    deps = {
+        "consumer.sub.f": ["provider.sub.g"],
+        "provider.sub.g": [],
+        "isolated.sub.h": [],
+    }
+    draft, _ = generate_layers_draft(si, deps)
+    root_order = [m for row in draft["root_layers"] for m in row]
+    assert root_order == ["consumer", "provider", "isolated"]
+
+
+def _leaf_modules(*names: str) -> dict[str, UnitInfo]:
+    """Create a symbol_index with one unit per leaf root module."""
+    return {f"{n}.f": UnitInfo(f"{n}.f", n, "f", "function") for n in names}
+
+
+def _root_order(si, deps) -> list[str]:
+    draft, _ = generate_layers_draft(si, deps)
+    return [m for row in draft["root_layers"] for m in row]
+
+
+def test_layers_draft_diamond():
+    """Diamond: a -> b, a -> c, b -> d, c -> d. Topo sort respects depth."""
+    si = _leaf_modules("a", "b", "c", "d")
+    deps = {
+        "a.f": ["b.f", "c.f"],
+        "b.f": ["d.f"],
+        "c.f": ["d.f"],
+        "d.f": [],
+    }
+    order = _root_order(si, deps)
+    assert order.index("a") < order.index("b")
+    assert order.index("a") < order.index("c")
+    assert order.index("b") < order.index("d")
+    assert order.index("c") < order.index("d")
+
+
+def test_layers_draft_cycle_fallback():
+    """Cycle: a -> b -> c -> a. Falls back to net-flow heuristic."""
+    si = _leaf_modules("a", "b", "c")
+    # a also depends on an external-ish node to break symmetry
+    deps = {
+        "a.f": ["b.f"],
+        "b.f": ["c.f"],
+        "c.f": ["a.f"],
+    }
+    # All three are in a cycle — should not crash, should return all three
+    order = _root_order(si, deps)
+    assert set(order) == {"a", "b", "c"}
+
+
+def test_layers_draft_cycle_with_external():
+    """Cycle with an external dependency: x -> (a <-> b), topo sort places x first."""
+    si = _leaf_modules("a", "b", "x")
+    deps = {
+        "x.f": ["a.f"],
+        "a.f": ["b.f"],
+        "b.f": ["a.f"],
+    }
+    order = _root_order(si, deps)
+    # x has no incoming deps and is not in the cycle — Kahn places it first
+    assert order[0] == "x"
+    assert set(order[1:]) == {"a", "b"}
+
+
+def test_layers_draft_all_isolated():
+    """All modules isolated — should fall back to alphabetical order."""
+    si = _leaf_modules("z", "m", "a")
+    deps = {"z.f": [], "m.f": [], "a.f": []}
+    assert _root_order(si, deps) == ["a", "m", "z"]
+
+
+def test_layers_draft_alphabetical_tiebreak():
+    """Nodes at the same depth in the DAG sort alphabetically."""
+    si = _leaf_modules("top", "beta", "alpha")
+    # top -> beta, top -> alpha (beta and alpha are at the same depth)
+    deps = {
+        "top.f": ["beta.f", "alpha.f"],
+        "beta.f": [],
+        "alpha.f": [],
+    }
+    order = _root_order(si, deps)
+    assert order[0] == "top"
+    assert order[1:] == ["alpha", "beta"]
+
+
+def test_layers_draft_mixed_isolated_and_connected():
+    """Multiple isolated nodes among connected ones, all at the bottom."""
+    si = _leaf_modules("consumer", "provider", "lone1", "lone2")
+    deps = {
+        "consumer.f": ["provider.f"],
+        "provider.f": [],
+        "lone1.f": [],
+        "lone2.f": [],
+    }
+    order = _root_order(si, deps)
+    assert order[:2] == ["consumer", "provider"]
+    assert order[2:] == ["lone1", "lone2"]  # isolated, alphabetical
 
 
 # =============================================================================
