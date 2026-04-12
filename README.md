@@ -17,7 +17,9 @@ While other tools exist to visualize codebases written in a specific programming
 
 3. **`prepare.py`** — reads both files, resolves all dependencies, validates them against the layer hierarchy, and writes `result.json`.
 
-4. **Frontend** — reads `result.json` and renders the interactive graph in the browser.
+4. **Frontend** — reads `result.json` and renders the interactive graph in the browser. Two visualization modes are available:
+   - **Box graph** — submodules as boxes with unit lists; dependency arrows appear on click. Good for seeing the contents of each submodule at a glance.
+   - **Pearl graph** — a vertical hierarchy with collapsible modules/submodules and arc-based dependency lines (inspired by [Sotograph](https://www.hello2morrow.com/products/sotograph)). Green arcs on the left show valid top-to-bottom dependencies; red arcs on the right show violations. Good for focusing on dependency flow and layer violations.
 
 ### Project structure
 
@@ -33,7 +35,8 @@ archgraph/
     ├── test_generate.py  # tests for generate.py
     ├── test_prepare.py   # tests for prepare.py
     ├── result.json       # output of prepare.py (read by the frontend)
-    └── index.html        # interactive graph visualization
+    ├── index.html        # interactive graph visualization
+    └── viz/              # visualization modules (box-graph, pearl-graph, shared)
 ```
 
 ### Running the data pipeline
