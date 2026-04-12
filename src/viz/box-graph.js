@@ -55,8 +55,8 @@ export const placeholderHTML = `
 export function render(data) {
   const { layers, submodules, units } = data;
 
-  // 1. Determine ordered list of submodules & layer bands
-  const { allSubmodules, rootBands } = flattenLayers(layers);
+  // 1. Determine ordered list of submodules
+  const allSubmodules = flattenLayers(layers);
 
   // 2. Compute box sizes (content-based), then expand for port symbols
   const boxSizes = computeBoxSizes(allSubmodules, submodules);
@@ -74,7 +74,7 @@ export function render(data) {
   container.style.height = totalH + 'px';
 
   // 4. Draw layer bands
-  drawBands(container, rootBands, layout, layers, allSubmodules, boxSizes);
+  drawBands(container, layout, layers, boxSizes);
 
   // 5. Draw boxes
   const boxEls = {};
@@ -95,23 +95,17 @@ export function render(data) {
 // ── Layer flattening ─────────────────────────────────────────────────────────
 function flattenLayers(layers) {
   const allSubmodules = [];
-  const rootBands = []; // {modules: string[], submodules: string[]}
-
   for (const rowModules of layers.root_layers) {
-    const bandSubs = [];
     for (const mod of rowModules) {
       if (layers.submodule_layers && layers.submodule_layers[mod]) {
-        const subRows = layers.submodule_layers[mod];
-        for (const subRow of subRows)
-          for (const sm of subRow) { allSubmodules.push(sm); bandSubs.push(sm); }
+        for (const subRow of layers.submodule_layers[mod])
+          for (const sm of subRow) allSubmodules.push(sm);
       } else {
         allSubmodules.push(mod);
-        bandSubs.push(mod);
       }
     }
-    rootBands.push({ modules: rowModules, submodules: bandSubs });
   }
-  return { allSubmodules, rootBands };
+  return allSubmodules;
 }
 
 // ── Box sizing ───────────────────────────────────────────────────────────────
@@ -138,6 +132,18 @@ function computeBoxSizes(allSubmodules, submodules) {
   return sizes;
 }
 
+// ── Connection sides (shared by expandBoxesForSymbols and drawArrows) ────────
+function connectionSides(from, to, layout, boxSizes) {
+  const rf = layout[from].rowIdx, rt = layout[to].rowIdx;
+  if (rf < rt) return { fromSide: 'bottom', toSide: 'top' };
+  if (rf > rt) return { fromSide: 'top',    toSide: 'bottom' };
+  const cf = layout[from].x + boxSizes[from].w / 2;
+  const ct = layout[to].x   + boxSizes[to].w   / 2;
+  return cf <= ct
+    ? { fromSide: 'right', toSide: 'left' }
+    : { fromSide: 'left',  toSide: 'right' };
+}
+
 // ── Expand boxes so port symbols fit ─────────────────────────────────────────
 function expandBoxesForSymbols(submodules, layout, boxSizes) {
   const symCount = {};
@@ -147,16 +153,7 @@ function expandBoxesForSymbols(submodules, layout, boxSizes) {
   for (const [from, smData] of Object.entries(submodules)) {
     for (const to of Object.keys(smData.dependencies || {})) {
       if (from === to || !layout[from] || !layout[to]) continue;
-      const rf = layout[from].rowIdx, rt = layout[to].rowIdx;
-      let fromSide, toSide;
-      if (rf < rt)      { fromSide = 'bottom'; toSide = 'top'; }
-      else if (rf > rt) { fromSide = 'top';    toSide = 'bottom'; }
-      else {
-        const cf = layout[from].x + boxSizes[from].w / 2;
-        const ct = layout[to].x   + boxSizes[to].w   / 2;
-        if (cf <= ct) { fromSide = 'right'; toSide = 'left'; }
-        else          { fromSide = 'left';  toSide = 'right'; }
-      }
+      const { fromSide, toSide } = connectionSides(from, to, layout, boxSizes);
       symCount[from][fromSide]++;
       symCount[to][toSide]++;
     }
@@ -255,7 +252,7 @@ function computeLayout(layers, allSubmodules, submodules, boxSizes) {
 }
 
 // ── Draw layer bands ─────────────────────────────────────────────────────────
-function drawBands(container, rootBands, layout, layers, allSubmodules, boxSizes) {
+function drawBands(container, layout, layers, boxSizes) {
   const BAND_PAD = BOX_PAD_Y;
   for (const rowModules of layers.root_layers) {
     for (const mod of rowModules) {
@@ -350,25 +347,13 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
     }
   }
 
-  // Returns which box sides a directed edge exits/enters, based on relative row/position.
-  function connectionSides(from, to) {
-    const rf = layout[from].rowIdx, rt = layout[to].rowIdx;
-    if (rf < rt) return { fromSide: 'bottom', toSide: 'top' };
-    if (rf > rt) return { fromSide: 'top',    toSide: 'bottom' };
-    const cf = layout[from].x + boxSizes[from].w / 2;
-    const ct = layout[to].x   + boxSizes[to].w   / 2;
-    return cf <= ct
-      ? { fromSide: 'right', toSide: 'left' }
-      : { fromSide: 'left',  toSide: 'right' };
-  }
-
   // connSide[sm][side] = [{partner, isOut, valid}, ...]
   const connSide = {};
   for (const sm of Object.keys(layout))
     connSide[sm] = { top: [], bottom: [], left: [], right: [] };
 
   for (const { from, to, valid } of edges) {
-    const { fromSide, toSide } = connectionSides(from, to);
+    const { fromSide, toSide } = connectionSides(from, to, layout, boxSizes);
     connSide[from][fromSide].push({ partner: to,   isOut: true,  valid });
     connSide[to][toSide].push(    { partner: from, isOut: false, valid });
   }
@@ -503,15 +488,6 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
     clearDetail();
   }
 
-  function applyUnitClass(el, cls) {
-    const priority = { 'is-selected': 3, 'is-callee': 2, 'is-caller': 1, 'dimmed': 0 };
-    const current = UNIT_CLASSES.find(c => el.classList.contains(c));
-    if (!current || priority[cls] > priority[current]) {
-      el.classList.remove(...UNIT_CLASSES);
-      el.classList.add(cls);
-    }
-  }
-
   function applyHighlighting(relevant, relevantArrows, unitClassifier) {
     for (const [sm, el] of Object.entries(boxEls)) {
       if (relevant.has(sm)) {
@@ -519,7 +495,7 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
         el.classList.add('focused');
         for (const u of el.querySelectorAll('.unit-name')) {
           u.classList.remove(...UNIT_CLASSES);
-          applyUnitClass(u, unitClassifier(sm, u.dataset.unit));
+          u.classList.add(unitClassifier(sm, u.dataset.unit));
         }
       } else {
         el.classList.add('dimmed');
@@ -615,13 +591,11 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
       e.stopPropagation();
       const unitEl = e.target.closest('.unit-name');
       if (unitEl) {
-        selectUnit(unitEl.dataset.unit);
+        if (selection?.type === 'unit' && selection.id === unitEl.dataset.unit) clearSelection();
+        else selectUnit(unitEl.dataset.unit);
       } else {
-        if (selection?.type === 'submodule' && selection.id === sm) {
-          clearSelection();
-        } else {
-          selectSubmodule(sm);
-        }
+        if (selection?.type === 'submodule' && selection.id === sm) clearSelection();
+        else selectSubmodule(sm);
       }
     });
   }

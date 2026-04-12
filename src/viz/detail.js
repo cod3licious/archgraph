@@ -1,10 +1,10 @@
+export function escapeHtml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // Very simple inline markdown: handles `code`, **bold**, paragraph breaks
 export function renderMarkdown(text) {
-  // Escape HTML
-  let s = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  let s = escapeHtml(text);
 
   // `code`
   s = s.replace(/`([^`\n]*)`/g, '<code>$1</code>');
@@ -32,10 +32,10 @@ export function clearDetail() {
 
 export function showSubmoduleDetail(sm, smData, units) {
   const unitNames = smData?.units || [];
-  const parts = [`<div class="detail-title">${sm}</div>`];
+  const parts = [`<div class="detail-title">${escapeHtml(sm)}</div>`];
   for (const name of unitNames) {
     const u = units[`${sm}.${name}`];
-    if (u) parts.push(`<h3>${name}</h3>` + renderMarkdown(u.description || ''));
+    if (u) parts.push(`<h3>${escapeHtml(name)}</h3>` + renderMarkdown(u.description || ''));
   }
   setDetail(parts.join(''));
 }
@@ -43,7 +43,7 @@ export function showSubmoduleDetail(sm, smData, units) {
 export function showUnitDetail(unitPath, unitData) {
   const name = unitData.name || unitPath.split('.').pop();
   setDetail(
-    `<div class="detail-title">${unitData.submodule}</div>` +
-    `<h3>${name}</h3>` + renderMarkdown(unitData.description || '')
+    `<div class="detail-title">${escapeHtml(unitData.submodule)}</div>` +
+    `<h3>${escapeHtml(name)}</h3>` + renderMarkdown(unitData.description || '')
   );
 }

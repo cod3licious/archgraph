@@ -19,7 +19,7 @@ While other tools exist to visualize codebases written in a specific programming
 
 4. **Frontend** — reads `result.json` and renders the interactive graph in the browser. Two visualization modes are available:
    - **Box graph** — submodules as boxes with unit lists; dependency arrows appear on click. Good for seeing the contents of each submodule at a glance.
-   - **Pearl graph** — a vertical hierarchy with collapsible modules/submodules and arc-based dependency lines (inspired by [Sotograph](https://www.hello2morrow.com/products/sotograph)). Green arcs on the left show valid top-to-bottom dependencies; red arcs on the right show violations. Good for focusing on dependency flow and layer violations.
+   - **Pearl graph** — a vertical hierarchy with collapsible modules/submodules and arc-based dependency lines (inspired by [Sonargraph](https://www.hello2morrow.com/products/sonargraph/architect)). Green arcs on the left show valid top-to-bottom dependencies; red arcs on the right show violations. Good for focusing on dependency flow and layer violations.
 
 ### Project structure
 

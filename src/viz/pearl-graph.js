@@ -1,4 +1,4 @@
-import { showSubmoduleDetail, showUnitDetail, clearDetail, setDetail } from './detail.js';
+import { showSubmoduleDetail, showUnitDetail, clearDetail, setDetail, escapeHtml } from './detail.js';
 
 // ── Load visualization-specific CSS ──────────────────────────────────────────
 const link = document.createElement('link');
@@ -11,7 +11,6 @@ const ROW_H = 28;
 const PEARL_R_MODULE = 10;
 const PEARL_R_SUBMODULE = 7;
 const PEARL_R_UNIT = 4;
-const ARC_GAP = 3;
 const TREE_WIDTH = 250;
 const TREE_PAD_TOP = 20;
 
@@ -130,11 +129,13 @@ function getVisibleRows(hierarchy, expanded) {
 }
 
 // ── Collect edges between visible pearls ─────────────────────────────────────
-function collectEdges(rows, nodeById, expanded, units) {
-  const pearlRows = rows.filter(r => r.showPearl);
+function collectEdges(rows, nodeById, units) {
+  const pearlRows = [];
+  const pearlVisualIdx = new Map();
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].showPearl) { pearlRows.push(rows[i]); pearlVisualIdx.set(rows[i].node.id, i); }
+  }
   const pearlIds = new Set(pearlRows.map(r => r.node.id));
-  // Map pearl id -> index within the full rows array (for Y alignment with tree)
-  const pearlVisualIdx = new Map(pearlRows.map(r => [r.node.id, rows.indexOf(r)]));
 
   // Map every node to the visible pearl that represents it
   const nodeToVisiblePearl = new Map();
@@ -168,7 +169,7 @@ function collectEdges(rows, nodeById, expanded, units) {
 function renderAll(state) {
   const { hierarchy, nodeById, moduleColors, expanded, submodules, units, treeDiv, canvasDiv } = state;
   const rows = getVisibleRows(hierarchy, expanded);
-  const { edges, pearlRows, pearlVisualIdx } = collectEdges(rows, nodeById, expanded, units);
+  const { edges, pearlRows, pearlVisualIdx } = collectEdges(rows, nodeById, units);
 
   treeDiv.innerHTML = '';
   canvasDiv.innerHTML = '';
@@ -218,17 +219,7 @@ function renderAll(state) {
                       : node.id;
     row.appendChild(label);
 
-    // Click to select
-    row.addEventListener('click', () => {
-      if (state.selection === node.id) {
-        state.selection = null;
-        clearHighlights(state);
-        clearDetail();
-      } else {
-        state.selection = node.id;
-        applySelection(state);
-      }
-    });
+    row.addEventListener('click', () => toggleSelection(state, node.id));
 
     treeDiv.appendChild(row);
     rowEls[node.id] = row;
@@ -300,16 +291,7 @@ function renderAll(state) {
     circle.setAttribute('stroke-width', '1.5');
     circle.classList.add('pearl-circle');
     circle.style.cursor = 'pointer';
-    circle.addEventListener('click', () => {
-      if (state.selection === node.id) {
-        state.selection = null;
-        clearHighlights(state);
-        clearDetail();
-      } else {
-        state.selection = node.id;
-        applySelection(state);
-      }
-    });
+    circle.addEventListener('click', () => toggleSelection(state, node.id));
     svg.appendChild(circle);
     pearlEls[node.id] = circle;
   }
@@ -365,6 +347,17 @@ function renderAll(state) {
 }
 
 // ── Selection ────────────────────────────────────────────────────────────────
+function toggleSelection(state, nodeId) {
+  if (state.selection === nodeId) {
+    state.selection = null;
+    clearHighlights(state);
+    clearDetail();
+  } else {
+    state.selection = nodeId;
+    applySelection(state);
+  }
+}
+
 function applySelection(state) {
   const { submodules, units, _pearlEls, _arcEls, _rows, _rowEls, _labelEls, _edges } = state;
   const selId = state.selection;
@@ -420,6 +413,17 @@ function applySelection(state) {
     }
   }
 
+  // Roll up callee/caller sets to submodule and module level
+  const calleeParents = new Set(), callerParents = new Set();
+  for (const uid of calleeIds) {
+    const n = state.nodeById.get(uid);
+    if (n) { calleeParents.add(n.parentId); calleeParents.add(n.module); }
+  }
+  for (const uid of callerIds) {
+    const n = state.nodeById.get(uid);
+    if (n) { callerParents.add(n.parentId); callerParents.add(n.module); }
+  }
+
   // Highlight rows
   for (const { node } of _rows) {
     const row = _rowEls[node.id], label = _labelEls[node.id];
@@ -430,8 +434,8 @@ function applySelection(state) {
     if (isConnected) {
       row.classList.remove('dimmed'); row.classList.add('focused');
       if (selPearlIds.has(node.id)) label.classList.add('is-selected');
-      else if (calleeIds.has(node.id)) label.classList.add('is-callee');
-      else if (callerIds.has(node.id)) label.classList.add('is-caller');
+      else if (calleeIds.has(node.id) || calleeParents.has(node.id)) label.classList.add('is-callee');
+      else if (callerIds.has(node.id) || callerParents.has(node.id)) label.classList.add('is-caller');
     } else {
       row.classList.add('dimmed'); row.classList.remove('focused');
     }
@@ -449,11 +453,11 @@ function applySelection(state) {
 
   // Detail panel
   if (selNode.level === 'module') {
-    const parts = [`<div class="detail-title">${selId}</div>`];
+    const parts = [`<div class="detail-title">${escapeHtml(selId)}</div>`];
     for (const sm of selNode.children) {
-      parts.push(`<h3>${sm.id}</h3>`);
+      parts.push(`<h3>${escapeHtml(sm.id)}</h3>`);
       const smUnits = submodules[sm.id]?.units || [];
-      parts.push(`<p>${smUnits.join(', ') || 'no units'}</p>`);
+      parts.push(`<p>${smUnits.map(escapeHtml).join(', ') || 'no units'}</p>`);
     }
     setDetail(parts.join(''));
   } else if (selNode.level === 'submodule') {
