@@ -1,4 +1,4 @@
-import { showSubmoduleDetail, showUnitDetail, clearDetail } from './detail.js';
+import { showSubmoduleDetail, showUnitDetail, clearDetail, setDetail } from './detail.js';
 
 // ── Load visualization-specific CSS ──────────────────────────────────────────
 const link = document.createElement('link');
@@ -205,19 +205,17 @@ function renderAll(state) {
                       : node.id;
     row.appendChild(label);
 
-    // Click to select (not for modules)
-    if (node.level !== 'module') {
-      row.addEventListener('click', () => {
-        if (state.selection === node.id) {
-          state.selection = null;
-          clearHighlights(state);
-          clearDetail();
-        } else {
-          state.selection = node.id;
-          applySelection(state);
-        }
-      });
-    }
+    // Click to select
+    row.addEventListener('click', () => {
+      if (state.selection === node.id) {
+        state.selection = null;
+        clearHighlights(state);
+        clearDetail();
+      } else {
+        state.selection = node.id;
+        applySelection(state);
+      }
+    });
 
     treeDiv.appendChild(row);
     rowEls[node.id] = row;
@@ -290,7 +288,6 @@ function renderAll(state) {
     circle.classList.add('pearl-circle');
     circle.style.cursor = 'pointer';
     circle.addEventListener('click', () => {
-      if (node.level === 'module') return;
       if (state.selection === node.id) {
         state.selection = null;
         clearHighlights(state);
@@ -324,6 +321,7 @@ function renderAll(state) {
       path.setAttribute('stroke', color);
       path.setAttribute('stroke-width', '1.5');
       path.classList.add('pearl-arc');
+      if (!e.valid) path.classList.add('violation');
       svg.insertBefore(path, svg.firstChild);
       arcEls[`${e.from}->${e.to}`] = path;
     }
@@ -360,11 +358,15 @@ function applySelection(state) {
   const selNode = state.nodeById.get(selId);
   if (!selNode) return;
 
-  // For expanded submodules, match edges involving any child unit pearl
+  // Collect all descendant pearl IDs (for expanded modules/submodules)
   const selPearlIds = new Set([selId]);
-  if (selNode.level === 'submodule' && selNode.children.length > 0) {
-    for (const child of selNode.children) selPearlIds.add(child.id);
-  }
+  const addDescendants = node => {
+    for (const child of node.children) {
+      selPearlIds.add(child.id);
+      addDescendants(child);
+    }
+  };
+  addDescendants(selNode);
 
   // Connected pearls and arcs
   const connectedPearls = new Set(selPearlIds);
@@ -386,15 +388,22 @@ function applySelection(state) {
       for (const [uid, u] of Object.entries(units))
         if (uid !== selId && u.dependencies?.[selId] !== undefined) callerIds.add(uid);
     }
-  } else if (selNode.level === 'submodule') {
-    for (const uName of submodules[selId]?.units || []) {
-      for (const dep of Object.keys(units[`${selId}.${uName}`]?.dependencies || {}))
-        if (units[dep]?.submodule !== selId) calleeIds.add(dep);
+  } else if (selNode.level === 'submodule' || selNode.level === 'module') {
+    // Collect all submodules belonging to this selection
+    const selSubmodules = selNode.level === 'module'
+      ? selNode.children.map(c => c.id)
+      : [selId];
+    const selSmSet = new Set(selSubmodules);
+    for (const sm of selSubmodules) {
+      for (const uName of submodules[sm]?.units || []) {
+        for (const dep of Object.keys(units[`${sm}.${uName}`]?.dependencies || {}))
+          if (!selSmSet.has(units[dep]?.submodule)) calleeIds.add(dep);
+      }
     }
     for (const [uid, ud] of Object.entries(units)) {
-      if (ud.submodule === selId) continue;
+      if (selSmSet.has(ud.submodule)) continue;
       for (const dep of Object.keys(ud.dependencies || {}))
-        if (units[dep]?.submodule === selId) { callerIds.add(uid); break; }
+        if (selSmSet.has(units[dep]?.submodule)) { callerIds.add(uid); break; }
     }
   }
 
@@ -426,8 +435,19 @@ function applySelection(state) {
     el.classList.toggle('dimmed', !connectedPearls.has(id));
 
   // Detail panel
-  if (selNode.level === 'submodule') showSubmoduleDetail(selId, submodules[selId], units);
-  else if (selNode.level === 'unit') showUnitDetail(selId, units[selId]);
+  if (selNode.level === 'module') {
+    const parts = [`<div class="detail-title">${selId}</div>`];
+    for (const sm of selNode.children) {
+      parts.push(`<h3>${sm.id}</h3>`);
+      const smUnits = submodules[sm.id]?.units || [];
+      parts.push(`<p>${smUnits.join(', ') || 'no units'}</p>`);
+    }
+    setDetail(parts.join(''));
+  } else if (selNode.level === 'submodule') {
+    showSubmoduleDetail(selId, submodules[selId], units);
+  } else if (selNode.level === 'unit') {
+    showUnitDetail(selId, units[selId]);
+  }
 }
 
 function clearHighlights(state) {

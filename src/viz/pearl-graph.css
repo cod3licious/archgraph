@@ -112,6 +112,7 @@
   opacity: 0.5;
 }
 
+.pearl-arc.violation { opacity: 0.8; }
 .pearl-arc.dimmed { opacity: 0.06; }
 .pearl-arc.highlighted { opacity: 0.85; }
 
