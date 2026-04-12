@@ -30,6 +30,7 @@ export const placeholderHTML = `
 
   <h4>Interactions</h4>
   <div>Click [+]/[-] to expand or collapse modules and submodules. Click any name or pearl to focus it. Unrelated nodes fade out, and only the arcs to connected nodes remain. The detail panel on the right shows the description.</div>
+  <div style="margin-top:6px"><a href="#" id="pearl-collapse-all">Collapse all</a></div>
   <div style="margin-top:6px">Within the highlighted nodes, names are styled to show their role:</div>
   <div class="legend" style="margin-top:6px">
     <span></span><span><span class="pearl-label is-selected">name</span>: the selected node(s)</span>
@@ -75,6 +76,17 @@ export function render(data) {
   };
 
   renderAll(state);
+
+  const collapseLink = document.getElementById('pearl-collapse-all');
+  if (collapseLink) {
+    collapseLink.addEventListener('click', e => {
+      e.preventDefault();
+      expanded.clear();
+      state.selection = null;
+      clearDetail();
+      renderAll(state);
+    });
+  }
 }
 
 // ── Build hierarchy ──────────────────────────────────────────────────────────
