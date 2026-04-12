@@ -228,6 +228,8 @@ def _find_in_index(qualified: str, symbol_index: dict[str, UnitInfo]) -> str | N
 def format_units_md(
     symbol_index: dict[str, UnitInfo],
     dependencies: dict[str, list[str]],
+    *,
+    full_docstrings: bool = False,
 ) -> str:
     """Format units and their dependencies as markdown compatible with prepare.py."""
     # Group by submodule, sorted
@@ -240,7 +242,8 @@ def format_units_md(
         units = by_submodule[sm]
         for unit in units:
             lines.append(f"### {unit.qualified_name}")
-            desc = unit.docstring or f"{unit.kind.capitalize()} in {unit.submodule}."
+            docstring = unit.docstring if full_docstrings else unit.docstring.split("\n")[0] if unit.docstring else None
+            desc = docstring or f"{unit.kind.capitalize()} in {unit.submodule}."
             deps = dependencies.get(unit.qualified_name, [])
             if deps:
                 dep_refs = ", ".join(f"`@{d}`" for d in sorted(deps))
@@ -400,6 +403,9 @@ if __name__ == "__main__":
     ap.add_argument("--output", required=True, type=Path, help="Output folder (created if it doesn't exist)")
     ap.add_argument("--include-private", action="store_true", help="Include private symbols (e.g., `_`-prefixed in Python)")
     ap.add_argument("--exclude", default="", help="Comma-separated glob patterns for filenames to skip")
+    ap.add_argument(
+        "--full-docstrings", action="store_true", help="Include full docstrings instead of just the first paragraph"
+    )
     args = ap.parse_args()
 
     exclude_patterns = [p.strip() for p in args.exclude.split(",") if p.strip()]
@@ -422,7 +428,7 @@ if __name__ == "__main__":
     args.output.mkdir(parents=True, exist_ok=True)
 
     units_path = args.output / "units.md"
-    units_path.write_text(format_units_md(symbol_index, deps), encoding="utf-8")
+    units_path.write_text(format_units_md(symbol_index, deps, full_docstrings=args.full_docstrings), encoding="utf-8")
     logger.info(f"Wrote {units_path}")
 
     layers_path = args.output / "layers.json"

@@ -421,6 +421,20 @@ def test_format_units_md_parseable_by_prepare():
     assert unit_order["mod"] == ["func_a", "func_b"]
 
 
+def test_format_units_md_truncates_docstring_by_default():
+    si = {"mod.f": UnitInfo("mod.f", "mod", "f", "function", docstring="First paragraph.\n\nSecond paragraph.")}
+    md = format_units_md(si, {"mod.f": []})
+    assert "First paragraph." in md
+    assert "Second paragraph." not in md
+
+
+def test_format_units_md_full_docstrings():
+    si = {"mod.f": UnitInfo("mod.f", "mod", "f", "function", docstring="First paragraph.\n\nSecond paragraph.")}
+    md = format_units_md(si, {"mod.f": []}, full_docstrings=True)
+    assert "First paragraph." in md
+    assert "Second paragraph." in md
+
+
 # =============================================================================
 # generate_layers_draft
 # =============================================================================

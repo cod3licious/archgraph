@@ -125,6 +125,7 @@ uv run src/generate.py --root /path/to/your/package --output my_project_data/
 Additional options:
 - `--include-private` - include private symbols (e.g., `_`-prefixed in Python; excluded by default)
 - `--exclude "test_*,conftest*"` - comma-separated glob patterns for filenames to skip
+- `--full-docstrings` - include full docstrings in unit descriptions (by default only the first paragraph is used)
 
 Currently only Python is supported. Adding a new language requires three steps in `src/languages.py`:
 
