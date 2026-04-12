@@ -578,34 +578,42 @@ def _violation_units(unit_a, sm_a, dep_b, sm_b):
     }
 
 
+def _unit_order_from(units):
+    """Derive unit_order dict from a units dict, preserving insertion order."""
+    order = {}
+    for _path, u in units.items():
+        order.setdefault(u["submodule"], []).append(u["name"])
+    return order
+
+
 def test_check_valid_cross_module_dep(caplog):
     units = _violation_units("api.routes.f", "api.routes", "db.commands.g", "db.commands")
-    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert result["api.routes.f"]["dependencies"]["db.commands.g"] is True
 
 
 def test_check_invalid_upward_dep(caplog):
     units = _violation_units("db.commands.g", "db.commands", "api.routes.f", "api.routes")
-    result, caplog = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    result, caplog = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert result["db.commands.g"]["dependencies"]["api.routes.f"] is False
     assert "Architecture Validation" in caplog.text
 
 
 def test_check_invalid_same_root_layer_different_module(caplog):
     units = _violation_units("main.run", "main", "api.routes.f", "api.routes")
-    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert result["main.run"]["dependencies"]["api.routes.f"] is False
 
 
 def test_check_valid_intra_module_downward(caplog):
     units = _violation_units("db.commands.g", "db.commands", "db.queries.sample.f", "db.queries.sample")
-    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert result["db.commands.g"]["dependencies"]["db.queries.sample.f"] is True
 
 
 def test_check_invalid_intra_module_upward(caplog):
     units = _violation_units("db.queries.sample.f", "db.queries.sample", "db.commands.g", "db.commands")
-    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert result["db.queries.sample.f"]["dependencies"]["db.commands.g"] is False
 
 
@@ -616,47 +624,58 @@ def test_check_invalid_same_intra_layer_siblings(caplog):
         "db.queries.config.g",
         "db.queries.config",
     )
-    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert result["db.queries.sample.f"]["dependencies"]["db.queries.config.g"] is False
 
 
 def test_check_same_submodule_always_allowed(caplog):
     units = _violation_units("db.commands.f", "db.commands", "db.commands.g", "db.commands")
-    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert result["db.commands.f"]["dependencies"]["db.commands.g"] is True
+
+
+def test_check_same_submodule_upward_violation(caplog):
+    # f is at index 0, g at index 1; g depends on f = upward (violation)
+    units = {
+        "db.commands.f": {"submodule": "db.commands", "name": "f", "description": "", "dependencies": {}},
+        "db.commands.g": {"submodule": "db.commands", "name": "g", "description": "", "dependencies": {"db.commands.f": True}},
+    }
+    result, caplog = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
+    assert result["db.commands.g"]["dependencies"]["db.commands.f"] is False
+    assert "intra-submodule" in caplog.text
 
 
 def test_check_does_not_modify_original(caplog):
     units = _violation_units("db.commands.g", "db.commands", "api.routes.f", "api.routes")
     original = deepcopy(units)
-    _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert units == original
 
 
 def test_check_core_cannot_depend_on_higher(caplog):
     units = _violation_units("core.common.f", "core.common", "db.commands.g", "db.commands")
-    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert result["core.common.f"]["dependencies"]["db.commands.g"] is False
 
 
 def test_check_lower_module_can_depend_on_same_lower_layer(caplog):
     # core.optimization and core.prediction are siblings — neither can depend on the other
     units = _violation_units("core.optimization.f", "core.optimization", "core.prediction.g", "core.prediction")
-    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert result["core.optimization.f"]["dependencies"]["core.prediction.g"] is False
 
 
 def test_check_lower_submodule_can_depend_on_lower_submodule(caplog):
     # core.optimization and core.common: core.common is in a lower layer
     units = _violation_units("core.optimization.f", "core.optimization", "core.common.g", "core.common")
-    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert result["core.optimization.f"]["dependencies"]["core.common.g"] is True
 
 
 def test_check_cross_module_lower_to_higher_invalid(caplog):
     # core (bottom) -> api (top): invalid
     units = _violation_units("core.common.f", "core.common", "api.routes.g", "api.routes")
-    result, _ = _capture(check_layer_violations, units, LAYERS, caplog=caplog)
+    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
     assert result["core.common.f"]["dependencies"]["api.routes.g"] is False
 
 

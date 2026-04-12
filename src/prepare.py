@@ -198,28 +198,45 @@ def _build_sm_info(layers: dict) -> dict[str, tuple[int, int, str]]:
     return sm_info
 
 
-def check_layer_violations(units: dict, layers: dict) -> dict:
+def check_layer_violations(units: dict, layers: dict, unit_order: dict) -> dict:
     """Flag dependencies that violate the layer hierarchy.
 
-    A dependency from sm_a → sm_b is allowed iff:
-    - sm_a == sm_b (intra-submodule call), or
-    - sm_b is in a strictly lower root-layer row than sm_a, or
-    - sm_a and sm_b share the same root module AND sm_b is in a strictly lower
-      intra-module row than sm_a.
+    A dependency from unit_a -> unit_b is allowed iff:
+    - unit_a == unit_b (self-dep, already removed), or
+    - Cross-submodule: sm_b is in a strictly lower root-layer row than sm_a,
+      or sm_a and sm_b share the same root module AND sm_b is in a strictly
+      lower intra-module row.
+    - Intra-submodule: unit_b appears after unit_a in the unit_order for that
+      submodule (i.e., unit_b has a higher index).
 
-    Setup is O(S), each dependency check is O(1). Total: O(S + U*D).
+    Setup is O(S + U), each dependency check is O(1). Total: O(S + U*D).
     Does not modify the input dict.
     """
     sm_info = _build_sm_info(layers)
+
+    # Build unit position index within each submodule: unit_path -> index
+    unit_pos: dict[str, int] = {}
+    for sm, names in unit_order.items():
+        for idx, name in enumerate(names):
+            unit_pos[f"{sm}.{name}"] = idx
+
     result: dict[str, dict] = {}
 
     for unit_path, unit in units.items():
         rr_a, ir_a, root_a = sm_info[unit["submodule"]]
+        pos_a = unit_pos.get(unit_path, 0)
         resolved: dict[str, bool] = {}
         for dep_path, valid in unit["dependencies"].items():
             sm_b = units[dep_path]["submodule"]
             if unit["submodule"] == sm_b:
-                resolved[dep_path] = valid
+                # Intra-submodule: allowed only if dep is below caller in unit order
+                pos_b = unit_pos.get(dep_path, 0)
+                allowed = pos_b > pos_a
+                if not allowed:
+                    logger.warning(f"Architecture Validation (intra-submodule): {unit_path} must not depend on {dep_path}")
+                    resolved[dep_path] = False
+                else:
+                    resolved[dep_path] = valid
                 continue
             rr_b, ir_b, root_b = sm_info[sm_b]
             allowed = rr_b > rr_a or (rr_b == rr_a and root_a == root_b and ir_b > ir_a)
@@ -267,7 +284,7 @@ def process_files(unit_descriptions: str, layers: dict) -> dict:
     submodules = create_submodules_dict(all_submodules, unit_order)
     submodules = assign_submodule_colors(submodules, layers)
     units = resolve_dependencies(units)
-    units = check_layer_violations(units, layers)
+    units = check_layer_violations(units, layers, unit_order)
     submodules = assign_submodule_dependencies(submodules, units)
     return {"layers": layers, "submodules": submodules, "units": units}
 
