@@ -17,20 +17,26 @@ const TREE_PAD_TOP = 20;
 
 // ── Placeholder HTML ─────────────────────────────────────────────────────────
 export const placeholderHTML = `
-  <div>This graph shows the layered architecture as a vertical hierarchy. Modules and submodules can be expanded to reveal their contents.</div>
+  <div>This graph shows the layered architecture as a vertical hierarchy. Each row is a <strong>module</strong>, <strong>submodule</strong>, or <strong>unit</strong> (function/class). Modules and submodules can be expanded to reveal their contents.</div>
 
   <h4>Visual encoding</h4>
   <div class="legend">
     <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="#bab7e0" stroke="#706da6" stroke-width="1"/></svg>
-    <span>Pearl - sized by hierarchy level (module > submodule > unit)</span>
+    <span>Pearl: sized by hierarchy level (module > submodule > unit)</span>
     <svg width="18" height="10" viewBox="0 0 18 10"><path d="M2,5 Q9,-3 16,5" fill="none" stroke="#2a7a2a" stroke-width="2"/></svg>
-    <span>Left arc (green) - dependency goes top to bottom (valid direction)</span>
+    <span>Green arc (left): valid dependency (top to bottom)</span>
     <svg width="18" height="10" viewBox="0 0 18 10"><path d="M2,5 Q9,-3 16,5" fill="none" stroke="#b03a2e" stroke-width="2"/></svg>
-    <span>Right arc (red) - dependency goes bottom to top (violation)</span>
+    <span>Red arc (right): layer violation (bottom to top)</span>
   </div>
 
   <h4>Interactions</h4>
-  <div>Click [+]/[-] to expand or collapse modules and submodules. Click a name to highlight its dependencies in the arc diagram.</div>`;
+  <div>Click [+]/[-] to expand or collapse modules and submodules. Click any name or pearl to focus it. Unrelated nodes fade out, and only the arcs to connected nodes remain. The detail panel on the right shows the description.</div>
+  <div style="margin-top:6px">Within the highlighted nodes, names are styled to show their role:</div>
+  <div class="legend" style="margin-top:6px">
+    <span></span><span><span class="pearl-label is-selected">name</span>: the selected node(s)</span>
+    <span></span><span><span class="pearl-label is-callee">name</span>: a dependency (callee)</span>
+    <span></span><span><span class="pearl-label is-caller">name</span>: a dependent (caller)</span>
+  </div>`;
 
 // ── Main render ──────────────────────────────────────────────────────────────
 export function render(data) {

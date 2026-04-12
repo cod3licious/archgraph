@@ -35,20 +35,20 @@ export const placeholderHTML = `
   <h4>Visual encoding</h4>
   <div class="legend">
     <svg width="10" height="10" viewBox="0 0 10 10"><polygon points="5,10 0,0 10,0" fill="#555"/></svg>
-    <span>Outgoing dependency &mdash; this submodule calls another</span>
+    <span>Outgoing dependency: this submodule calls another</span>
     <svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="#555"/></svg>
-    <span>Incoming dependency &mdash; another submodule calls this one</span>
+    <span>Incoming dependency: another submodule calls this one</span>
     <svg width="18" height="4" viewBox="0 0 18 4"><rect x="2" width="14" height="4" rx="1" fill="#b03a2e"/></svg>
-    <span style="color:#b03a2e">Layer violation &mdash; dependency points upward in the hierarchy</span>
+    <span>Layer violation: dependency points upward in the hierarchy</span>
   </div>
 
-  <h4>On click</h4>
+  <h4>Interactions</h4>
   <div>Click any submodule box or unit name to focus it. Unrelated submodules fade out, and the dependency lines to connected submodules appear. The detail panel on the right shows the description.</div>
   <div style="margin-top:6px">Within the highlighted submodules, units are styled to show their role:</div>
   <div class="legend" style="margin-top:6px">
-    <span></span><span><span class="unit-name is-selected">unit_name</span> &mdash; the selected unit(s)</span>
-    <span></span><span><span class="unit-name is-callee">unit_name</span> &mdash; a dependency (callee)</span>
-    <span></span><span><span class="unit-name is-caller">unit_name</span> &mdash; a dependent (caller)</span>
+    <span></span><span><span class="unit-name is-selected">unit_name</span>: the selected unit(s)</span>
+    <span></span><span><span class="unit-name is-callee">unit_name</span>: a dependency (callee)</span>
+    <span></span><span><span class="unit-name is-caller">unit_name</span>: a dependent (caller)</span>
   </div>`;
 
 // ── Main render ──────────────────────────────────────────────────────────────
