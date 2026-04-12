@@ -604,7 +604,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
       const n = items.length;
       const totalSpan = (n - 1) * SYM_GAP;
       const edgeLen = isHoriz ? sz.w : sz.h;
-      const start = Math.max(SYM_MARGIN, (edgeLen - totalSpan) / 2);
+      const start = (edgeLen - totalSpan) / 2;
 
       items.forEach(({ partner, isOut, valid }, i) => {
         const color = valid ? VALID_SYM_COLOR : VIOLATION_COLOR;

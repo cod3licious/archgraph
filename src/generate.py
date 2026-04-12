@@ -350,3 +350,4 @@ if __name__ == "__main__":
     layers_path = args.output / "layers.json"
     layers_path.write_text(json.dumps(draft, indent=2) + "\n", encoding="utf-8")
     logger.info(f"Wrote {layers_path}")
+    logger.info("Please adjust the (sub)module layer hierarchy in `layers.json` to reflect the target architecture.")
