@@ -39,8 +39,8 @@ export const placeholderHTML = `
 
 // ── Main render ──────────────────────────────────────────────────────────────
 export function render(data) {
-  const { layers, submodules, units } = data;
-  const hierarchy = buildHierarchy(layers, submodules);
+  const { layers, submodules, units, high_level_units_first } = data;
+  const hierarchy = buildHierarchy(layers, submodules, high_level_units_first);
 
   // Default: modules expanded, submodules collapsed
   const expanded = new Set(hierarchy.filter(n => n.level === 'module' && n.children[0]?.level === 'submodule').map(n => n.id));
@@ -78,7 +78,14 @@ export function render(data) {
 }
 
 // ── Build hierarchy ──────────────────────────────────────────────────────────
-function buildHierarchy(layers, submodules) {
+function buildHierarchy(layers, submodules, highLevelUnitsFirst) {
+  // Pearl graph renders top-to-bottom (high-level at top), so unit lists
+  // need to be in high-level-first order. Reverse when data is low-level-first.
+  const graphUnits = (sm) => {
+    const u = submodules[sm]?.units || [];
+    return highLevelUnitsFirst ? u : [...u].reverse();
+  };
+
   const nodes = [];
   for (const rootRow of layers.root_layers) {
     for (const mod of rootRow) {
@@ -88,7 +95,7 @@ function buildHierarchy(layers, submodules) {
       const subLayers = layers.submodule_layers?.[mod];
       if (!subLayers) {
         // Single-submodule module: attach units directly to the module node
-        for (const u of submodules[mod]?.units || []) {
+        for (const u of graphUnits(mod)) {
           const unitId = `${mod}.${u}`;
           const unitNode = { id: unitId, level: 'unit', module: mod, parentId: mod, children: [] };
           moduleNode.children.push(unitNode);
@@ -102,7 +109,7 @@ function buildHierarchy(layers, submodules) {
           moduleNode.children.push(smNode);
           nodes.push(smNode);
 
-          for (const u of submodules[sm]?.units || []) {
+          for (const u of graphUnits(sm)) {
             const unitId = `${sm}.${u}`;
             const unitNode = { id: unitId, level: 'unit', module: mod, parentId: sm, children: [] };
             smNode.children.push(unitNode);

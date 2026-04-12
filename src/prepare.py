@@ -289,7 +289,7 @@ def process_files(unit_descriptions: str, layers: dict, *, high_level_units_firs
     units = resolve_dependencies(units)
     units = check_layer_violations(units, layers, unit_order, high_level_units_first=high_level_units_first)
     submodules = assign_submodule_dependencies(submodules, units)
-    return {"layers": layers, "submodules": submodules, "units": units}
+    return {"layers": layers, "submodules": submodules, "units": units, "high_level_units_first": high_level_units_first}
 
 
 if __name__ == "__main__":

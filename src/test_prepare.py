@@ -789,6 +789,7 @@ def test_process_full_pipeline_structure(caplog):
     assert "layers" in result
     assert "submodules" in result
     assert "units" in result
+    assert result["high_level_units_first"] is False
     assert "api.routes" in result["submodules"]
     assert "api.routes.get_samples" in result["units"]
 
