@@ -70,30 +70,6 @@ python -m http.server 8000 --directory src
 # then open http://localhost:8000
 ```
 
-## How I created this project with AI
-
-I don't code a lot by hand anymore these days, but I still care deeply about well-designed software. I follow my [Clarity-Driven Development approach](https://franziskahorn.de/articles/2026-01-cdd-humans-ai), where you first think through the Why, What, and How and capture it in sketch documents like [`sketch.md`](sketch.md) before writing a single line of code.
-
-After some minor refinements based on Claude's feedback, I implemented the project step by step with Claude Agent in the [Zed IDE](https://zed.dev/) - tests first, then the Python script, then the frontend. The frontend in particular was a lot of fun: having AI in the loop made it easy to iterate on design ideas until we landed on something less cluttered than the typical arrow-heavy diagram. Instead of showing all connections at once, small icons on each box indicate incoming and outgoing dependencies, and the actual lines only appear when you click on a submodule or unit.
-
-**What I decided on my own:**
-
-- **Input files:** External inputs are often produced by processes outside our control. I liked the markdown format I was already using for my sketches, so the implementation just had to handle that.
-- **Final product:** The interactive visualization has to serve my needs as a user. I explored a few options with the AI, but it was ultimately my call which one I found most useful.
-
-**Where I asked AI for feedback:**
-
-- **Interface / intermediate data structures:** These are among the most important decisions in software, since changing them later — especially if you need to migrate existing data — can be a lot of work. In this case, the shape of `result.json` determined both how easily the frontend could render the visualization and what steps the Python script needed to take. I figured out the basics from what I knew I wanted to see, but since I don't have much web development experience, I asked my AI agent whether the format would be sufficient.
-- **Software design:** How you decompose software into submodules and units is another big decision. For the Python script, I drafted this in `sketch.md` based on the steps needed to produce the final output and what I might want to reuse later. The AI suggested better names and flagged a few details I'd missed.
-
-**What I left up to the AI (with some general guidelines):**
-
-- **Implementation details:** My sketch already contained a lot of pseudocode covering invariants and edge cases, but how to translate that into actual code was left to the AI (and I'm genuinely glad I didn't have to look up how to generate n evenly-spaced colors and convert them to hex). However, I did provide general coding guidelines in an `AGENTS.md` file to give it some guardrails.
-
-In multiple places, Claude's implementation was also more efficient than what I initially came up with: For example, my naive idea for checking architectural layer violations would have required $O(n^2)$ memory, while Claude later came up with a solution that only needed $O(n)$. Could I have come up with a better solution myself? Maybe. But most definitely not in the time it took me to write "Check if anything could be refactored to improve performance." And for a side project like this I probably wouldn't have bothered.
-
-The whole project took one weekend: about 1.5 days writing the sketch document and a few hours instructing Claude (Sonnet 4.6). Without a pro plan it would have cost me around $15 in tokens - definitely worth it!
-
 
 ## Using ArchGraph with your own codebase
 
@@ -216,3 +192,29 @@ Paste the following prompt into your AI agent of choice (Claude, Codex, Gemini, 
 > - Do not invent dependencies that do not exist in the actual code.
 >
 > Produce both files in full. Think carefully about the layer ordering before writing `layers.json` — the most common mistake is placing a module too high when it is actually called by others.
+
+
+
+## How I created this project with AI
+
+I don't code a lot by hand anymore these days, but I still care deeply about well-designed software. I follow my [Clarity-Driven Development approach](https://franziskahorn.de/articles/2026-01-cdd-humans-ai), where you first think through the Why, What, and How and capture it in sketch documents like [`sketch.md`](sketch.md) before writing a single line of code.
+
+After some minor refinements based on Claude's feedback, I implemented the project step by step with Claude Agent in the [Zed IDE](https://zed.dev/) - tests first, then the Python script, then the frontend. The frontend in particular was a lot of fun: having AI in the loop made it easy to iterate on design ideas until we landed on something less cluttered than the typical arrow-heavy diagram. Instead of showing all connections at once, small icons on each box indicate incoming and outgoing dependencies, and the actual lines only appear when you click on a submodule or unit.
+
+**What I decided on my own:**
+
+- **Input files:** External inputs are often produced by processes outside our control. I liked the markdown format I was already using for my sketches, so the implementation just had to handle that.
+- **Final product:** The interactive visualization has to serve my needs as a user. I explored a few options with the AI, but it was ultimately my call which one I found most useful.
+
+**Where I asked AI for feedback:**
+
+- **Interface / intermediate data structures:** These are among the most important decisions in software, since changing them later — especially if you need to migrate existing data — can be a lot of work. In this case, the shape of `result.json` determined both how easily the frontend could render the visualization and what steps the Python script needed to take. I figured out the basics from what I knew I wanted to see, but since I don't have much web development experience, I asked my AI agent whether the format would be sufficient.
+- **Software design:** How you decompose software into submodules and units is another big decision. For the Python script, I drafted this in `sketch.md` based on the steps needed to produce the final output and what I might want to reuse later. The AI suggested better names and flagged a few details I'd missed.
+
+**What I left up to the AI (with some general guidelines):**
+
+- **Implementation details:** My sketch already contained a lot of pseudocode covering invariants and edge cases, but how to translate that into actual code was left to the AI (and I'm genuinely glad I didn't have to look up how to generate n evenly-spaced colors and convert them to hex). However, I did provide general coding guidelines in an `AGENTS.md` file to give it some guardrails.
+
+In multiple places, Claude's implementation was also more efficient than what I initially came up with: For example, my naive idea for checking architectural layer violations would have required $O(n^2)$ memory, while Claude later came up with a solution that only needed $O(n)$. Could I have come up with a better solution myself? Maybe. But most definitely not in the time it took me to write "Check if anything could be refactored to improve performance." And for a side project like this I probably wouldn't have bothered.
+
+The initial implementation of the whole project took one weekend: about 1.5 days writing the sketch document and a few hours instructing Claude (Sonnet 4.6). Without a pro plan it would have cost me around $15 in tokens - definitely worth it!
