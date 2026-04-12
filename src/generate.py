@@ -244,7 +244,7 @@ def format_units_md(
             deps = dependencies.get(unit.qualified_name, [])
             if deps:
                 dep_refs = ", ".join(f"`@{d}`" for d in sorted(deps))
-                desc = f"{desc} Depends on {dep_refs}."
+                desc = f"{desc}\n\nDepends on {dep_refs}."
             lines.append(desc)
             lines.append("")
 

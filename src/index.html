@@ -38,8 +38,7 @@ body {
 /* Layer bands */
 .layer-band {
   position: absolute;
-  left: 0;
-  right: 0;
+  border-radius: 4px;
 }
 
 .layer-band:nth-child(odd)  { background: #f0f0f0; }
@@ -95,6 +94,7 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: center;
 }
 
 .box-units {
@@ -267,10 +267,15 @@ const UNIT_ROW_H = 20;
 const TITLE_H = 26;
 const BOX_PAD_Y = 10; // top+bottom padding inside box units area
 const COLS_THRESHOLD = 4; // use 2 columns when unit count > this
+const BAND_LABEL_H = 18; // vertical space reserved for the layer label above boxes
 
 const VALID_COLOR     = '#333'; // arrow stroke for valid dependencies
 const VALID_SYM_COLOR = '#555'; // port symbol fill for valid dependencies (slightly lighter)
 const VIOLATION_COLOR = '#b03a2e'; // brick red for dependency violations
+
+const SYM_R   = 4;  // circle radius / triangle half-size
+const SYM_GAP = 14; // center-to-center spacing between symbols on same edge
+const SYM_MARGIN = SYM_R + 4;
 
 const BEZIER_CP_MIN    = 20;   // minimum bezier control-point offset
 const BEZIER_CP_FACTOR = 0.25; // control-point length as fraction of arc distance
@@ -292,11 +297,11 @@ function render(data) {
   // 1. Determine ordered list of submodules & layer bands
   const { allSubmodules, rootBands } = flattenLayers(layers);
 
-  // 2. Compute box sizes
+  // 2. Compute box sizes (content-based), then expand for port symbols
   const boxSizes = computeBoxSizes(allSubmodules, submodules);
-
-  // 3. Layout: assign (x, y) to each box
-  const layout = computeLayout(layers, allSubmodules, submodules, boxSizes);
+  let layout = computeLayout(layers, allSubmodules, submodules, boxSizes);
+  if (expandBoxesForSymbols(submodules, layout, boxSizes))
+    layout = computeLayout(layers, allSubmodules, submodules, boxSizes);
 
   // 4. Total canvas size
   const totalW = Math.max(...Object.values(layout).map(p => p.x + boxSizes[p.submodule].w)) + PAD_X;
@@ -365,10 +370,53 @@ function computeBoxSizes(allSubmodules, submodules) {
     });
     const titleW = sm.length * CHAR_W + SIDE_PAD;
     const colsW  = colWidths.reduce((s, w) => s + w, 0) + (cols - 1) * COL_GAP + SIDE_PAD;
-    const w = Math.max(BOX_MIN_W, titleW, colsW);
-    sizes[sm] = { w, h };
+    const contentW = Math.max(BOX_MIN_W, titleW, colsW);
+    sizes[sm] = { w: contentW, h, contentW };
   }
   return sizes;
+}
+
+// ─── Expand boxes so port symbols fit ─────────────────────────────────────────
+function expandBoxesForSymbols(submodules, layout, boxSizes) {
+  // Count symbols per (box, side) — same logic as drawArrows
+  const symCount = {};
+  for (const sm of Object.keys(layout))
+    symCount[sm] = { top: 0, bottom: 0, left: 0, right: 0 };
+
+  for (const [from, smData] of Object.entries(submodules)) {
+    for (const to of Object.keys(smData.dependencies || {})) {
+      if (from === to || !layout[from] || !layout[to]) continue;
+      const rf = layout[from].rowIdx, rt = layout[to].rowIdx;
+      let fromSide, toSide;
+      if (rf < rt)      { fromSide = 'bottom'; toSide = 'top'; }
+      else if (rf > rt) { fromSide = 'top';    toSide = 'bottom'; }
+      else {
+        const cf = layout[from].x + boxSizes[from].w / 2;
+        const ct = layout[to].x   + boxSizes[to].w   / 2;
+        if (cf <= ct) { fromSide = 'right'; toSide = 'left'; }
+        else          { fromSide = 'left';  toSide = 'right'; }
+      }
+      symCount[from][fromSide]++;
+      symCount[to][toSide]++;
+    }
+  }
+
+  // Expand box sizes where symbols would overflow
+  let changed = false;
+  for (const sm of Object.keys(symCount)) {
+    const c = symCount[sm];
+    const minHoriz = Math.max(c.top, c.bottom);
+    const minVert  = Math.max(c.left, c.right);
+    if (minHoriz > 0) {
+      const need = (minHoriz - 1) * SYM_GAP + 2 * SYM_MARGIN;
+      if (need > boxSizes[sm].w) { boxSizes[sm].w = need; changed = true; }
+    }
+    if (minVert > 0) {
+      const need = (minVert - 1) * SYM_GAP + 2 * SYM_MARGIN;
+      if (need > boxSizes[sm].h) { boxSizes[sm].h = need; changed = true; }
+    }
+  }
+  return changed;
 }
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
@@ -410,7 +458,7 @@ function computeLayout(layers, allSubmodules, submodules, boxSizes) {
         colW = Math.max(colW, rowW);
       }
 
-      let subRowY = bandY;
+      let subRowY = bandY + BAND_LABEL_H;
       for (let r = 0; r < col.length; r++) {
         const subRow = col[r];
         const rowW = subRow.reduce((s, sm) => s + ((boxSizes[sm] || {}).w || 0), 0)
@@ -428,7 +476,7 @@ function computeLayout(layers, allSubmodules, submodules, boxSizes) {
 
     bandSms.push(thisBandSms);
     globalRowIdx += maxSubRows;
-    const bandH = rowHeights.reduce((s, h) => s + h, 0)
+    const bandH = BAND_LABEL_H + rowHeights.reduce((s, h) => s + h, 0)
                 + (maxSubRows - 1) * BOX_GAP_Y
                 + BOX_PAD_Y * 2;
     bandY += bandH + BOX_GAP_Y;
@@ -450,39 +498,39 @@ function computeLayout(layers, allSubmodules, submodules, boxSizes) {
 
 // ─── Draw layer bands ─────────────────────────────────────────────────────────
 function drawBands(container, rootBands, layout, layers, allSubmodules, boxSizes) {
-  // Compute vertical extents for each band from actual box positions
-  const rootLayerRows = layers.root_layers;
-
-  // Collect ordered submodules per root row
-  for (let ri = 0; ri < rootLayerRows.length; ri++) {
-    const rowModules = rootLayerRows[ri];
-    const bandSubs = [];
+  const BAND_PAD = BOX_PAD_Y;
+  for (const rowModules of layers.root_layers) {
     for (const mod of rowModules) {
-      if (layers.submodule_layers && layers.submodule_layers[mod]) {
-        for (const subRow of layers.submodule_layers[mod])
-          for (const sm of subRow) bandSubs.push(sm);
-      } else {
-        bandSubs.push(mod);
-      }
+      const subs = (layers.submodule_layers && layers.submodule_layers[mod])
+        ? layers.submodule_layers[mod].flat()
+        : [mod];
+      const placed = subs.filter(sm => layout[sm]);
+      if (!placed.length) continue;
+
+      const xs    = placed.map(sm => layout[sm].x);
+      const xRs   = placed.map(sm => layout[sm].x + boxSizes[sm].w);
+      const ys    = placed.map(sm => layout[sm].y);
+      const yBots = placed.map(sm => layout[sm].y + boxSizes[sm].h);
+
+      const left   = Math.min(...xs) - BAND_PAD;
+      const right  = Math.max(...xRs) + BAND_PAD;
+      const top    = Math.min(...ys) - BAND_PAD - BAND_LABEL_H;
+      const bottom = Math.max(...yBots) + BAND_PAD;
+
+      const band = document.createElement('div');
+      band.className = 'layer-band';
+      band.style.left   = left + 'px';
+      band.style.width  = (right - left) + 'px';
+      band.style.top    = top + 'px';
+      band.style.height = (bottom - top) + 'px';
+
+      const label = document.createElement('div');
+      label.className = 'layer-label';
+      label.textContent = mod;
+      band.appendChild(label);
+
+      container.appendChild(band);
     }
-    if (!bandSubs.length) continue;
-
-    const ys = bandSubs.map(sm => layout[sm] ? layout[sm].y : 0);
-    const yBots = bandSubs.map(sm => layout[sm] ? layout[sm].y + (boxSizes[sm] || {h:0}).h : 0);
-    const top    = Math.min(...ys) - BOX_PAD_Y;
-    const bottom = Math.max(...yBots) + BOX_PAD_Y;
-
-    const band = document.createElement('div');
-    band.className = 'layer-band';
-    band.style.top    = top + 'px';
-    band.style.height = (bottom - top) + 'px';
-
-    const label = document.createElement('div');
-    label.className = 'layer-label';
-    label.textContent = rowModules.join(', ');
-    band.appendChild(label);
-
-    container.appendChild(band);
   }
 }
 
@@ -507,6 +555,10 @@ function drawBox(container, sm, data, pos, sz) {
   const units = data.units || [];
   const cols  = units.length > COLS_THRESHOLD ? 2 : 1;
   unitsDiv.style.gridTemplateColumns = cols === 2 ? '1fr 1fr' : '1fr';
+  if (sz.contentW < sz.w) {
+    unitsDiv.style.maxWidth = sz.contentW + 'px';
+    unitsDiv.style.margin = '0 auto';
+  }
 
   for (const u of units) {
     const span = document.createElement('span');
@@ -546,10 +598,6 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
   // them valid-first then by partner center to minimize crossings, space them
   // evenly centered on the edge. The same positions serve as both the visual
   // symbols and the arrow endpoints.
-
-  const SYM_R   = 4;  // circle radius / triangle half-size
-  const SYM_GAP = 14; // center-to-center spacing between symbols on same edge
-  const SYM_MARGIN = SYM_R + 4;
 
   // Returns which box sides a directed edge exits/enters, based on relative row/position.
   function connectionSides(from, to) {
@@ -604,7 +652,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
       const n = items.length;
       const totalSpan = (n - 1) * SYM_GAP;
       const edgeLen = isHoriz ? sz.w : sz.h;
-      const start = (edgeLen - totalSpan) / 2;
+      const start = Math.max(SYM_MARGIN, (edgeLen - totalSpan) / 2);
 
       items.forEach(({ partner, isOut, valid }, i) => {
         const color = valid ? VALID_SYM_COLOR : VIOLATION_COLOR;
@@ -895,7 +943,7 @@ function renderMarkdown(text) {
     .replace(/>/g, '&gt;');
 
   // `code`
-  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/`([^`\n]*)`/g, '<code>$1</code>');
 
   // **bold**
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
