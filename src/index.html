@@ -120,6 +120,41 @@ body {
   padding-top: 12px;
   border-top: 1px solid #eee;
 }
+
+/* ── View toggle ── */
+.view-toggle {
+  display: flex;
+  gap: 0;
+  margin: 10px 0 14px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.view-toggle button {
+  flex: 1;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: none;
+  background: #f5f5f5;
+  color: #666;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.view-toggle button:not(:last-child) {
+  border-right: 1px solid #ccc;
+}
+
+.view-toggle button.active {
+  background: #444;
+  color: #fff;
+}
+
+.view-toggle button:hover:not(.active) {
+  background: #e8e8e8;
+}
 </style>
 </head>
 <body>
@@ -129,6 +164,12 @@ body {
   </div>
   <div id="resizer"></div>
   <div id="detail-pane">
+    <div style="font-size:15px;font-weight:700;color:#333;margin-bottom:2px">ArchGraph</div>
+    <div style="font-size:11px;color:#888;margin-bottom:4px">Choose a visualization mode:</div>
+    <div class="view-toggle">
+      <button data-view="box" class="active">Boxes</button>
+      <button data-view="pearl">Pearls</button>
+    </div>
     <div id="detail-placeholder"></div>
     <div id="detail-content" style="display:none"></div>
   </div>
@@ -136,16 +177,53 @@ body {
 
 <script type="module">
 import { initResizer } from './viz/resizer.js';
-import { placeholderHTML, render } from './viz/box-graph.js';
+import { placeholderHTML as boxPlaceholder, render as renderBox } from './viz/box-graph.js';
+import { placeholderHTML as pearlPlaceholder, render as renderPearl } from './viz/pearl-graph.js';
 
-document.getElementById('detail-placeholder').innerHTML = placeholderHTML
-  + `<div class="cta"><a href="https://github.com/cod3licious/archgraph" target="_blank" style="color:#666;display:inline-flex;align-items:center;gap:5px;text-decoration:none"><svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg>Create a visualization of your own codebase</a></div>`;
+const views = {
+  box:   { placeholder: boxPlaceholder,   render: renderBox },
+  pearl: { placeholder: pearlPlaceholder, render: renderPearl },
+};
+
+const githubLink = `<div class="cta"><a href="https://github.com/cod3licious/archgraph" target="_blank" style="color:#666;display:inline-flex;align-items:center;gap:5px;text-decoration:none"><svg height="14" width="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg>Create a visualization of your own codebase</a></div>`;
+
+let currentView = 'box';
+let resultData = null;
+
+function switchView(view) {
+  if (view === currentView && resultData) return;
+  currentView = view;
+
+  // Update toggle buttons
+  for (const btn of document.querySelectorAll('.view-toggle button'))
+    btn.classList.toggle('active', btn.dataset.view === view);
+
+  // Update placeholder
+  document.getElementById('detail-placeholder').innerHTML =
+    views[view].placeholder + githubLink;
+  document.getElementById('detail-content').style.display = 'none';
+  document.getElementById('detail-placeholder').style.display = '';
+
+  // Clean up previous view's event listeners
+  const graphPane = document.getElementById('graph-pane');
+  if (graphPane._viewCleanup) { graphPane._viewCleanup(); graphPane._viewCleanup = null; }
+
+  // Re-render graph
+  document.getElementById('graph-container').innerHTML = '';
+  if (resultData) views[view].render(resultData);
+}
 
 initResizer();
 
+// Wire toggle buttons
+for (const btn of document.querySelectorAll('.view-toggle button'))
+  btn.addEventListener('click', () => switchView(btn.dataset.view));
+
+switchView('box');
+
 fetch('result.json')
   .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
-  .then(render)
+  .then(data => { resultData = data; views[currentView].render(data); })
   .catch(err => {
     document.getElementById('graph-container').innerHTML =
       `<p style="padding:24px;color:#b03a2e">Failed to load result.json: ${err.message}</p>`;

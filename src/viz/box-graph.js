@@ -30,7 +30,6 @@ const BEZIER_CP_MAX    = 120;  // maximum bezier control-point offset
 
 // ── Placeholder HTML (shown in detail pane before any selection) ─────────────
 export const placeholderHTML = `
-  <div style="font-size:15px;font-weight:700;color:#333;margin-bottom:6px">ArchGraph</div>
   <div>This graph shows the layered architecture of a codebase. Layers run top to bottom &mdash; higher layers should call into lower ones. Each grey band is a <strong>module</strong>, subdivided into <strong>submodules</strong> (the boxes). Each box lists its <strong>units</strong>: the individual functions or classes.</div>
 
   <h4>Visual encoding</h4>
@@ -628,11 +627,13 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
   }
 
   // Click background to clear
-  graphPane.addEventListener('click', e => {
+  const bgHandler = e => {
     if (e.target === graphPane || e.target === document.getElementById('graph-container')
         || e.target.classList.contains('layer-band')
         || e.target.classList.contains('layer-label')) {
       clearSelection();
     }
-  });
+  };
+  graphPane.addEventListener('click', bgHandler);
+  graphPane._viewCleanup = () => graphPane.removeEventListener('click', bgHandler);
 }
