@@ -57,6 +57,8 @@ uv run src/prepare.py --layers path/to/layers.json --units path/to/units.md
 
 Output is written to `src/result.json`.
 
+**Intra-submodule unit ordering:** By default, units within a submodule are expected to be listed low-level first (Python convention: define helper functions at the top, compose them below). If your codebase follows the opposite convention (e.g. Java/C#: high-level entry points first, helpers below), pass `--high-level-units-first`.
+
 **Run the tests:**
 
 ```bash

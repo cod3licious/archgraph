@@ -628,19 +628,42 @@ def test_check_invalid_same_intra_layer_siblings(caplog):
     assert result["db.queries.sample.f"]["dependencies"]["db.queries.config.g"] is False
 
 
-def test_check_same_submodule_always_allowed(caplog):
-    units = _violation_units("db.commands.f", "db.commands", "db.commands.g", "db.commands")
-    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
-    assert result["db.commands.f"]["dependencies"]["db.commands.g"] is True
-
-
-def test_check_same_submodule_upward_violation(caplog):
-    # f is at index 0, g at index 1; g depends on f = upward (violation)
+def test_check_same_submodule_bottom_up_allowed(caplog):
+    # Bottom-up (default): g (idx 1) depends on f (idx 0) = depends on earlier unit = allowed
     units = {
         "db.commands.f": {"submodule": "db.commands", "name": "f", "description": "", "dependencies": {}},
         "db.commands.g": {"submodule": "db.commands", "name": "g", "description": "", "dependencies": {"db.commands.f": True}},
     }
+    result, _ = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
+    assert result["db.commands.g"]["dependencies"]["db.commands.f"] is True
+
+
+def test_check_same_submodule_bottom_up_violation(caplog):
+    # Bottom-up (default): f (idx 0) depends on g (idx 1) = depends on later unit = violation
+    units = _violation_units("db.commands.f", "db.commands", "db.commands.g", "db.commands")
     result, caplog = _capture(check_layer_violations, units, LAYERS, _unit_order_from(units), caplog=caplog)
+    assert result["db.commands.f"]["dependencies"]["db.commands.g"] is False
+    assert "intra-submodule" in caplog.text
+
+
+def test_check_same_submodule_high_level_first_allowed(caplog):
+    # Top-down: f (idx 0) depends on g (idx 1) = depends on later unit = allowed
+    units = _violation_units("db.commands.f", "db.commands", "db.commands.g", "db.commands")
+    result, _ = _capture(
+        check_layer_violations, units, LAYERS, _unit_order_from(units), high_level_units_first=True, caplog=caplog
+    )
+    assert result["db.commands.f"]["dependencies"]["db.commands.g"] is True
+
+
+def test_check_same_submodule_high_level_first_violation(caplog):
+    # Top-down: g (idx 1) depends on f (idx 0) = depends on earlier unit = violation
+    units = {
+        "db.commands.f": {"submodule": "db.commands", "name": "f", "description": "", "dependencies": {}},
+        "db.commands.g": {"submodule": "db.commands", "name": "g", "description": "", "dependencies": {"db.commands.f": True}},
+    }
+    result, caplog = _capture(
+        check_layer_violations, units, LAYERS, _unit_order_from(units), high_level_units_first=True, caplog=caplog
+    )
     assert result["db.commands.g"]["dependencies"]["db.commands.f"] is False
     assert "intra-submodule" in caplog.text
 

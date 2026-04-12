@@ -198,7 +198,7 @@ def _build_sm_info(layers: dict) -> dict[str, tuple[int, int, str]]:
     return sm_info
 
 
-def check_layer_violations(units: dict, layers: dict, unit_order: dict) -> dict:
+def check_layer_violations(units: dict, layers: dict, unit_order: dict, *, high_level_units_first: bool = False) -> dict:
     """Flag dependencies that violate the layer hierarchy.
 
     A dependency from unit_a -> unit_b is allowed iff:
@@ -206,8 +206,11 @@ def check_layer_violations(units: dict, layers: dict, unit_order: dict) -> dict:
     - Cross-submodule: sm_b is in a strictly lower root-layer row than sm_a,
       or sm_a and sm_b share the same root module AND sm_b is in a strictly
       lower intra-module row.
-    - Intra-submodule: unit_b appears after unit_a in the unit_order for that
-      submodule (i.e., unit_b has a higher index).
+    - Intra-submodule: depends on high_level_units_first. By default
+      (Python convention), units listed first are leaf-level, so a unit may
+      only depend on units *above* it (lower index). With
+      high_level_units_first=True (e.g. Java/C#), a unit may only depend
+      on units *below* it (higher index).
 
     Setup is O(S + U), each dependency check is O(1). Total: O(S + U*D).
     Does not modify the input dict.
@@ -229,9 +232,9 @@ def check_layer_violations(units: dict, layers: dict, unit_order: dict) -> dict:
         for dep_path, valid in unit["dependencies"].items():
             sm_b = units[dep_path]["submodule"]
             if unit["submodule"] == sm_b:
-                # Intra-submodule: allowed only if dep is below caller in unit order
+                # Intra-submodule: direction depends on convention
                 pos_b = unit_pos.get(dep_path, 0)
-                allowed = pos_b > pos_a
+                allowed = pos_b > pos_a if high_level_units_first else pos_b < pos_a
                 if not allowed:
                     logger.warning(f"Architecture Validation (intra-submodule): {unit_path} must not depend on {dep_path}")
                     resolved[dep_path] = False
@@ -276,7 +279,7 @@ def assign_submodule_dependencies(submodules: dict, units: dict) -> dict:
     return {sm: {**sm_data, "dependencies": sm_deps[sm]} for sm, sm_data in submodules.items()}
 
 
-def process_files(unit_descriptions: str, layers: dict) -> dict:
+def process_files(unit_descriptions: str, layers: dict, *, high_level_units_first: bool = False) -> dict:
     units, unit_order = parse_unit_descriptions(unit_descriptions)
     all_submodules = flatten_layers(layers)
     if not validate_unit_paths(units, all_submodules):
@@ -284,7 +287,7 @@ def process_files(unit_descriptions: str, layers: dict) -> dict:
     submodules = create_submodules_dict(all_submodules, unit_order)
     submodules = assign_submodule_colors(submodules, layers)
     units = resolve_dependencies(units)
-    units = check_layer_violations(units, layers, unit_order)
+    units = check_layer_violations(units, layers, unit_order, high_level_units_first=high_level_units_first)
     submodules = assign_submodule_dependencies(submodules, units)
     return {"layers": layers, "submodules": submodules, "units": units}
 
@@ -300,6 +303,12 @@ if __name__ == "__main__":
     group.add_argument("--input", metavar="FOLDER", help="Folder containing layers.json and units.md")
     group.add_argument("--layers", metavar="FILE", help="Path to layers.json")
     parser.add_argument("--units", metavar="FILE", help="Path to units.md (required when --layers is used)")
+    parser.add_argument(
+        "--high-level-units-first",
+        action="store_true",
+        help="Assume high-level units are listed before their dependencies (e.g. Java/C#). "
+        "Default assumes low-level units first (Python convention).",
+    )
     args = parser.parse_args()
 
     if args.input:
@@ -314,7 +323,7 @@ if __name__ == "__main__":
     unit_descriptions = units_path.read_text(encoding="utf-8")
 
     try:
-        result = process_files(unit_descriptions, layers_data)
+        result = process_files(unit_descriptions, layers_data, high_level_units_first=args.high_level_units_first)
     except ValueError as e:
         logger.critical(str(e))
         sys.exit(1)
