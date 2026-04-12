@@ -9,8 +9,11 @@
   flex-shrink: 0;
   padding: 20px 0 20px 16px;
   user-select: none;
-  position: relative;
-  z-index: 1;
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: linear-gradient(to right, rgba(245,245,245,0.7) 60%, transparent);
+  padding-right: 24px;
 }
 
 .pearl-canvas {

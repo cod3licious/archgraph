@@ -281,10 +281,13 @@ function renderAll(state) {
   svg.setAttribute('height', totalH);
   svg.style.cssText = 'position:absolute;top:0;left:0';
   canvasDiv.appendChild(svg);
-  canvasDiv.style.width = svgW + 'px';
   canvasDiv.style.minHeight = totalH + 'px';
+  // Make canvas wide enough so the user can scroll the pearls next to the tree
+  const graphPane = document.getElementById('graph-pane');
+  const visibleW = graphPane.clientWidth - TREE_WIDTH;
+  canvasDiv.style.width = Math.max(svgW, pearlCX + visibleW) + 'px';
   // Ensure wrapper (and its band container) spans the full scrollable width
-  wrapper.style.minWidth = (TREE_WIDTH + svgW) + 'px';
+  wrapper.style.minWidth = (TREE_WIDTH + parseInt(canvasDiv.style.width)) + 'px';
 
   const rowY = idx => idx * ROW_H + ROW_H / 2 + TREE_PAD_TOP;
 
@@ -304,6 +307,9 @@ function renderAll(state) {
     circle.setAttribute('stroke-width', '1.5');
     circle.classList.add('pearl-circle');
     circle.style.cursor = 'pointer';
+    const title = createSvgEl('title');
+    title.textContent = node.id;
+    circle.appendChild(title);
     circle.addEventListener('click', () => toggleSelection(state, node.id));
     svg.appendChild(circle);
     pearlEls[node.id] = circle;
@@ -346,7 +352,6 @@ function renderAll(state) {
   if (state.selection) applySelection(state);
 
   // Background click clears selection
-  const graphPane = document.getElementById('graph-pane');
   if (state._bgClickHandler) graphPane.removeEventListener('click', state._bgClickHandler);
   state._bgClickHandler = e => {
     if (!e.target.closest('.pearl-row') && !e.target.classList.contains('pearl-circle')) {
