@@ -21,7 +21,7 @@ export const placeholderHTML = `
 
   <h4>Visual encoding</h4>
   <div class="legend">
-    <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="#7a7" stroke="#484" stroke-width="1"/></svg>
+    <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="#bab7e0" stroke="#706da6" stroke-width="1"/></svg>
     <span>Pearl - sized by hierarchy level (module > submodule > unit)</span>
     <svg width="18" height="10" viewBox="0 0 18 10"><path d="M2,5 Q9,-3 16,5" fill="none" stroke="#2a7a2a" stroke-width="2"/></svg>
     <span>Left arc (green) - dependency goes top to bottom (valid direction)</span>
@@ -166,6 +166,10 @@ function renderAll(state) {
 
   treeDiv.innerHTML = '';
   canvasDiv.innerHTML = '';
+  // Remove previous band container (lives in wrapper, not in tree/canvas)
+  const wrapper = treeDiv.parentElement;
+  const oldBands = wrapper.querySelector('.pearl-band-container');
+  if (oldBands) oldBands.remove();
 
   const rowEls = {}, labelEls = {};
 
@@ -220,10 +224,10 @@ function renderAll(state) {
     labelEls[node.id] = label;
   }
 
-  // ── Module bands ──
+  // ── Module bands (in wrapper so they span tree + canvas) ──
   const bandContainer = document.createElement('div');
-  bandContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;pointer-events:none';
-  canvasDiv.appendChild(bandContainer);
+  bandContainer.className = 'pearl-band-container';
+  wrapper.insertBefore(bandContainer, wrapper.firstChild);
 
   for (const mod of hierarchy.filter(n => n.level === 'module')) {
     const modRowIdxs = rows.map((r, i) => r.node.module === mod.id ? i : -1).filter(i => i >= 0);
@@ -284,6 +288,18 @@ function renderAll(state) {
     circle.setAttribute('stroke', darken(color));
     circle.setAttribute('stroke-width', '1.5');
     circle.classList.add('pearl-circle');
+    circle.style.cursor = 'pointer';
+    circle.addEventListener('click', () => {
+      if (node.level === 'module') return;
+      if (state.selection === node.id) {
+        state.selection = null;
+        clearHighlights(state);
+        clearDetail();
+      } else {
+        state.selection = node.id;
+        applySelection(state);
+      }
+    });
     svg.appendChild(circle);
     pearlEls[node.id] = circle;
   }
@@ -327,7 +343,7 @@ function renderAll(state) {
   const graphPane = document.getElementById('graph-pane');
   if (state._bgClickHandler) graphPane.removeEventListener('click', state._bgClickHandler);
   state._bgClickHandler = e => {
-    if (!e.target.closest('.pearl-row')) {
+    if (!e.target.closest('.pearl-row') && !e.target.classList.contains('pearl-circle')) {
       state.selection = null;
       clearHighlights(state);
       clearDetail();
@@ -344,11 +360,17 @@ function applySelection(state) {
   const selNode = state.nodeById.get(selId);
   if (!selNode) return;
 
+  // For expanded submodules, match edges involving any child unit pearl
+  const selPearlIds = new Set([selId]);
+  if (selNode.level === 'submodule' && selNode.children.length > 0) {
+    for (const child of selNode.children) selPearlIds.add(child.id);
+  }
+
   // Connected pearls and arcs
-  const connectedPearls = new Set([selId]);
+  const connectedPearls = new Set(selPearlIds);
   const connectedArcs = new Set();
   for (const edge of _edges) {
-    if (edge.from === selId || edge.to === selId) {
+    if (selPearlIds.has(edge.from) || selPearlIds.has(edge.to)) {
       connectedPearls.add(edge.from);
       connectedPearls.add(edge.to);
       connectedArcs.add(`${edge.from}->${edge.to}`);
@@ -380,11 +402,12 @@ function applySelection(state) {
   for (const { node } of _rows) {
     const row = _rowEls[node.id], label = _labelEls[node.id];
     if (!row) continue;
-    const isConnected = connectedPearls.has(node.id) || connectedPearls.has(node.parentId);
+    const isConnected = connectedPearls.has(node.id) || connectedPearls.has(node.parentId)
+                     || selPearlIds.has(node.id) || selPearlIds.has(node.parentId);
     label.classList.remove('is-selected', 'is-callee', 'is-caller');
-    if (isConnected || node.id === selId) {
+    if (isConnected) {
       row.classList.remove('dimmed'); row.classList.add('focused');
-      if (node.id === selId) label.classList.add('is-selected');
+      if (selPearlIds.has(node.id)) label.classList.add('is-selected');
       else if (calleeIds.has(node.id)) label.classList.add('is-callee');
       else if (callerIds.has(node.id)) label.classList.add('is-caller');
     } else {

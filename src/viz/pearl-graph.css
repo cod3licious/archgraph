@@ -2,18 +2,22 @@
 .pearl-graph {
   display: flex;
   min-height: 100%;
+  position: relative;
 }
 
 .pearl-tree {
   flex-shrink: 0;
   padding: 20px 0 20px 16px;
   user-select: none;
+  position: relative;
+  z-index: 1;
 }
 
 .pearl-canvas {
   flex: 1;
   position: relative;
   min-width: 200px;
+  z-index: 1;
 }
 
 .pearl-canvas svg {
@@ -83,11 +87,19 @@
 .pearl-label.is-caller   { font-style: italic; }
 
 /* ── Module band backgrounds ── */
+.pearl-band-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
 .pearl-band {
   position: absolute;
   left: 0;
   right: 0;
-  border-radius: 0;
   pointer-events: none;
 }
 
