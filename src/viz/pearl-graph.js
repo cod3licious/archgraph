@@ -43,7 +43,7 @@ export function render(data) {
   const hierarchy = buildHierarchy(layers, submodules);
 
   // Default: modules expanded, submodules collapsed
-  const expanded = new Set(hierarchy.filter(n => n.level === 'module').map(n => n.id));
+  const expanded = new Set(hierarchy.filter(n => n.level === 'module' && n.children[0]?.level === 'submodule').map(n => n.id));
 
   const container = document.getElementById('graph-container');
   container.innerHTML = '';
@@ -86,7 +86,16 @@ function buildHierarchy(layers, submodules) {
       nodes.push(moduleNode);
 
       const subLayers = layers.submodule_layers?.[mod];
-      if (!subLayers) continue;
+      if (!subLayers) {
+        // Single-submodule module: attach units directly to the module node
+        for (const u of submodules[mod]?.units || []) {
+          const unitId = `${mod}.${u}`;
+          const unitNode = { id: unitId, level: 'unit', module: mod, parentId: mod, children: [] };
+          moduleNode.children.push(unitNode);
+          nodes.push(unitNode);
+        }
+        continue;
+      }
       for (const subRow of subLayers) {
         for (const sm of subRow) {
           const smNode = { id: sm, level: 'submodule', module: mod, parentId: mod, children: [] };
@@ -258,12 +267,14 @@ function renderAll(state) {
   // Cubic Bezier max extent is ~75% of control point offset,
   // so use 2/3 of span to get a visually semicircular arc.
   const edgeBulge = e => Math.max(MIN_BULGE, (e.botIdx - e.topIdx) * ROW_H * 2 / 3);
-  const calcMaxBulge = list =>
-    list.length ? Math.max(...list.map(edgeBulge)) : 0;
-  const arcAreaLeft = Math.max(40, calcMaxBulge(leftEdges) + PEARL_R_MODULE);
-  const arcAreaRight = Math.max(40, calcMaxBulge(rightEdges) + PEARL_R_MODULE);
+  // Cubic bezier max visible extent is ~75% of control point offset
+  const edgeExtent = e => edgeBulge(e) * 0.75;
+  const calcMaxExtent = list =>
+    list.length ? Math.max(...list.map(edgeExtent)) : 0;
+  const arcAreaLeft = Math.max(40, calcMaxExtent(leftEdges) + PEARL_R_MODULE);
+  const arcAreaRight = Math.max(40, calcMaxExtent(rightEdges) + PEARL_R_MODULE);
   const pearlCX = arcAreaLeft;
-  const svgW = arcAreaLeft + arcAreaRight + 20;
+  const svgW = pearlCX + arcAreaRight + 20;
 
   const svg = createSvgEl('svg');
   svg.setAttribute('width', svgW);
@@ -272,6 +283,8 @@ function renderAll(state) {
   canvasDiv.appendChild(svg);
   canvasDiv.style.width = svgW + 'px';
   canvasDiv.style.minHeight = totalH + 'px';
+  // Ensure wrapper (and its band container) spans the full scrollable width
+  wrapper.style.minWidth = (TREE_WIDTH + svgW) + 'px';
 
   const rowY = idx => idx * ROW_H + ROW_H / 2 + TREE_PAD_TOP;
 
@@ -397,7 +410,7 @@ function applySelection(state) {
   } else if (selNode.level === 'submodule' || selNode.level === 'module') {
     // Collect all submodules belonging to this selection
     const selSubmodules = selNode.level === 'module'
-      ? selNode.children.map(c => c.id)
+      ? (selNode.children[0]?.level === 'submodule' ? selNode.children.map(c => c.id) : [selId])
       : [selId];
     const selSmSet = new Set(selSubmodules);
     for (const sm of selSubmodules) {
@@ -453,13 +466,18 @@ function applySelection(state) {
 
   // Detail panel
   if (selNode.level === 'module') {
-    const parts = [`<div class="detail-title">${escapeHtml(selId)}</div>`];
-    for (const sm of selNode.children) {
-      parts.push(`<h3>${escapeHtml(sm.id)}</h3>`);
-      const smUnits = submodules[sm.id]?.units || [];
-      parts.push(`<p>${smUnits.map(escapeHtml).join(', ') || 'no units'}</p>`);
+    if (selNode.children[0]?.level === 'unit') {
+      // Single-submodule module: show as submodule detail
+      showSubmoduleDetail(selId, submodules[selId], units);
+    } else {
+      const parts = [`<div class="detail-title">${escapeHtml(selId)}</div>`];
+      for (const sm of selNode.children) {
+        parts.push(`<h3>${escapeHtml(sm.id)}</h3>`);
+        const smUnits = submodules[sm.id]?.units || [];
+        parts.push(`<p>${smUnits.map(escapeHtml).join(', ') || 'no units'}</p>`);
+      }
+      setDetail(parts.join(''));
     }
-    setDetail(parts.join(''));
   } else if (selNode.level === 'submodule') {
     showSubmoduleDetail(selId, submodules[selId], units);
   } else if (selNode.level === 'unit') {
