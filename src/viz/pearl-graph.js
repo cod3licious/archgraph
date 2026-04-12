@@ -189,7 +189,14 @@ function renderAll(state) {
         e.stopPropagation();
         if (expanded.has(node.id)) expanded.delete(node.id);
         else expanded.add(node.id);
-        state.selection = null;
+        // If selection is inside the toggled subtree, move it to the toggled node
+        if (state.selection && state.selection !== node.id) {
+          let cur = state.nodeById.get(state.selection);
+          while (cur) {
+            if (cur.id === node.id) { state.selection = node.id; break; }
+            cur = cur.parentId ? state.nodeById.get(cur.parentId) : null;
+          }
+        }
         renderAll(state);
       });
     } else {
