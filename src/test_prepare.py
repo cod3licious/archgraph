@@ -397,6 +397,20 @@ def test_create_submodules_top_level_module_no_dot(caplog):
     assert result["main"]["module"] == "main"
 
 
+def test_create_submodules_module_from_layer_mapping(caplog):
+    """With a shared enclosing package, 'module' comes from the layer mapping, not split('.')[0]."""
+    sm_to_module = {"pkg.core.analysis": "pkg.core", "pkg.backend.server": "pkg.backend"}
+    result, _ = _capture(
+        create_submodules_dict,
+        ["pkg.core.analysis", "pkg.backend.server"],
+        {},
+        sm_to_module,
+        caplog=caplog,
+    )
+    assert result["pkg.core.analysis"]["module"] == "pkg.core"
+    assert result["pkg.backend.server"]["module"] == "pkg.backend"
+
+
 def test_create_submodules_missing_units_warns(caplog):
     _, caplog = _capture(create_submodules_dict, ["api.routes"], {}, caplog=caplog)
     assert any(r.levelno == logging.WARNING for r in caplog.records)

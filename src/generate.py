@@ -35,25 +35,89 @@ class UnitInfo:
 # ---------------------------------------------------------------------------
 
 
-def file_path_to_module(path: Path, root: Path, config: LanguageConfig) -> str | None:
+def file_path_to_module(path: Path, root: Path, config: LanguageConfig, prefix: tuple[str, ...] = ()) -> str | None:
     """Convert a file path to a dotted module path relative to root.
 
     Returns None for paths that can't be converted (e.g. outside root).
     Package filenames (e.g. __init__.py, index.ts) map to the parent directory.
+
+    `prefix` is prepended to the module path. When root is itself a package
+    directory, pass its package name(s) here so the resulting module paths match
+    absolute imports in the code (e.g. `from verimo.core import analysis`).
     """
     try:
         rel = path.relative_to(root)
     except ValueError:
         return None
-    parts = list(rel.with_suffix("").parts)
+    parts = list(prefix) + list(rel.with_suffix("").parts)
     if parts and parts[-1] in config.package_filenames:
         parts.pop()
     return ".".join(parts) if parts else None
 
 
+def _is_package_dir(directory: Path, config: LanguageConfig) -> bool:
+    """True if directory is a package (contains a package marker like __init__.py)."""
+    return any((directory / f"{name}.{ext}").exists() for name in config.package_filenames for ext in config.extensions)
+
+
+def package_prefix(root: Path, config: LanguageConfig) -> tuple[str, ...]:
+    """Package names to prepend to module paths when root sits inside a package.
+
+    If root itself is a package (e.g. `.../verimo` with an __init__.py), its name
+    is part of every module's import path. Walk up while each ancestor is also a
+    package so absolute imports resolve correctly regardless of where root points.
+    """
+    prefix: list[str] = []
+    directory = root
+    while _is_package_dir(directory, config):
+        prefix.append(directory.name)
+        directory = directory.parent
+    return tuple(reversed(prefix))
+
+
 # ---------------------------------------------------------------------------
 # Generic parsing (delegates to LanguageConfig)
 # ---------------------------------------------------------------------------
+
+
+def _def_name_kind(child: ts.Node, config: LanguageConfig) -> tuple[str, str] | None:
+    """Return (name, kind) for a top-level function/class node, or None if it isn't one."""
+    if child.type in config.function_node_types:
+        name_node = child.child_by_field_name(config.function_name_field)
+        kind = "function"
+    elif child.type in config.class_node_types:
+        name_node = child.child_by_field_name(config.class_name_field)
+        kind = "class"
+    else:
+        return None
+    if name_node is None:
+        return None
+    return _text(name_node), kind
+
+
+def _expand_private_calls(calls: list[str], helper_calls: dict[str, list[str]]) -> list[str]:
+    """Inline calls to same-module private helpers so their dependencies aren't lost.
+
+    Private helpers aren't emitted as units, so a public unit that delegates to
+    them would otherwise drop the helpers' outgoing dependencies. Recursively
+    replace each call to a private helper with the helper's own calls (a `seen`
+    set guards against recursion cycles).
+    """
+    expanded: list[str] = []
+    seen: set[str] = set()
+
+    def visit(cs: list[str]) -> None:
+        for call in cs:
+            if call in helper_calls:
+                if call in seen:
+                    continue
+                seen.add(call)
+                visit(helper_calls[call])
+            else:
+                expanded.append(call)
+
+    visit(calls)
+    return expanded
 
 
 def parse_file(
@@ -68,35 +132,29 @@ def parse_file(
 
     Extracts top-level functions and classes. Class methods are folded into
     the class unit (their calls become the class's raw_calls).
+
+    When private symbols are excluded (the default), their outgoing calls are
+    still inlined into the public units that call them, so dependencies routed
+    through private helpers are preserved as edges of the public callers.
     """
     tree = parser.parse(source)
     root = tree.root_node
 
-    units: list[UnitInfo] = []
     imports = config.import_extractor(root, module_path)
+    defs = [(nk[0], nk[1], child) for child in root.children if (nk := _def_name_kind(child, config)) is not None]
 
-    for child in root.children:
-        if child.type in config.function_node_types:
-            name_node = child.child_by_field_name(config.function_name_field)
-            if name_node is None:
-                continue
-            name = _text(name_node)
-            if not include_private and config.is_private(name, child):
-                continue
-            kind = "function"
+    # Map of private helper name -> its raw calls, used to inline edges into public callers.
+    helper_calls: dict[str, list[str]] = {}
+    if not include_private:
+        helper_calls = {name: config.call_extractor(child) for name, _kind, child in defs if config.is_private(name, child)}
 
-        elif child.type in config.class_node_types:
-            name_node = child.child_by_field_name(config.class_name_field)
-            if name_node is None:
-                continue
-            name = _text(name_node)
-            if not include_private and config.is_private(name, child):
-                continue
-            kind = "class"
-
-        else:
+    units: list[UnitInfo] = []
+    for name, kind, child in defs:
+        if not include_private and config.is_private(name, child):
             continue
-
+        calls = config.call_extractor(child)
+        if not include_private:
+            calls = _expand_private_calls(calls, helper_calls)
         units.append(
             UnitInfo(
                 qualified_name=f"{module_path}.{name}",
@@ -104,7 +162,7 @@ def parse_file(
                 name=name,
                 kind=kind,
                 docstring=config.docstring_extractor(child),
-                raw_calls=config.call_extractor(child),
+                raw_calls=calls,
             )
         )
 
@@ -139,11 +197,12 @@ def build_index(
     for ext, (lang_fn, config) in ext_configs.items():
         lang = ts.Language(lang_fn())
         parser = ts.Parser(lang)
+        prefix = package_prefix(root, config)
 
         for path in sorted(root.rglob(f"*.{ext}")):
             if any(fnmatch(path.name, pat) for pat in exclude):
                 continue
-            module_path = file_path_to_module(path, root, config)
+            module_path = file_path_to_module(path, root, config, prefix)
             if module_path is None:
                 continue
 
@@ -323,6 +382,28 @@ def _dep_sorted(items: list[str], dep_graph: dict[str, set[str]]) -> list[str]:
     return result
 
 
+def _root_module_depth(submodules: set[str]) -> int:
+    """Number of leading segments that make up a 'root module' key.
+
+    Normally 1 (the top-level package). But when every module shares a common
+    enclosing package (e.g. `verimo.core.*`, `verimo.backend.*`), that shared
+    package is just the project container, not an architectural layer, so we group
+    one level deeper (`verimo.core`, `verimo.backend`). Capped so a module that
+    sits at the shared level itself still keeps a root of its own.
+    """
+    if not submodules:
+        return 1
+    segmented = [sm.split(".") for sm in submodules]
+    min_len = min(len(s) for s in segmented)
+    common = 0
+    for i in range(min_len):
+        if len({s[i] for s in segmented}) == 1:
+            common += 1
+        else:
+            break
+    return min(common, min_len - 1) + 1
+
+
 def generate_layers_draft(
     symbol_index: dict[str, UnitInfo],
     dependencies: dict[str, list[str]],
@@ -336,16 +417,17 @@ def generate_layers_draft(
     Each module and submodule gets its own row. The user is expected to reorder
     rows and merge siblings to express the intended dependency hierarchy.
     """
-    # Collect submodules and root modules
-    submodules: set[str] = set()
-    root_modules: set[str] = set()
-    for unit in symbol_index.values():
-        submodules.add(unit.submodule)
-        root_modules.add(unit.submodule.split(".")[0])
+    submodules: set[str] = {unit.submodule for unit in symbol_index.values()}
+    depth = _root_module_depth(submodules)
+
+    def root_key(submodule: str) -> str:
+        return ".".join(submodule.split(".")[:depth])
+
+    root_modules = {root_key(sm) for sm in submodules}
 
     # Aggregate deps to submodule and root-module level
     sm_deps = _aggregate_deps_by(symbol_index, dependencies, lambda u: u.submodule)
-    root_deps = _aggregate_deps_by(symbol_index, dependencies, lambda u: u.submodule.split(".")[0])
+    root_deps = _aggregate_deps_by(symbol_index, dependencies, lambda u: root_key(u.submodule))
 
     root_layers = [[m] for m in _dep_sorted(list(root_modules), root_deps)]
 

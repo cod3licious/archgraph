@@ -94,19 +94,25 @@ def validate_unit_paths(units: dict, all_submodules: list[str]) -> bool:
     return valid
 
 
-def create_submodules_dict(all_submodules: list[str], unit_order: dict) -> dict:
+def create_submodules_dict(all_submodules: list[str], unit_order: dict, sm_to_module: dict[str, str] | None = None) -> dict:
     """Build the submodules dict with default metadata.
 
     unit_order contains short unit names (not full paths); they are stored
     directly in 'units' for use by the frontend.
+
+    A submodule's 'module' is the root layer it belongs to. This is defined by the
+    layer hierarchy, so callers pass sm_to_module (built from the layers). Without
+    it we fall back to the first path segment, which only matches when modules are
+    named at the top level (no shared enclosing package).
     """
+    sm_to_module = sm_to_module or {}
     submodules: dict[str, dict] = {}
     for sm in all_submodules:
         units_list = unit_order.get(sm, [])
         if not units_list:
             logger.warning(f"Submodule {sm} has no units")
         submodules[sm] = {
-            "module": sm.split(".")[0],
+            "module": sm_to_module.get(sm, sm.split(".")[0]),
             "color": "#D3D3D3",
             "units": units_list,
             "dependencies": {},
@@ -284,7 +290,8 @@ def process_files(unit_descriptions: str, layers: dict, *, high_level_units_firs
     all_submodules = flatten_layers(layers)
     if not validate_unit_paths(units, all_submodules):
         raise ValueError("Unit path validation failed — see errors above")
-    submodules = create_submodules_dict(all_submodules, unit_order)
+    sm_to_module = {sm: info[2] for sm, info in _build_sm_info(layers).items()}
+    submodules = create_submodules_dict(all_submodules, unit_order, sm_to_module)
     submodules = assign_submodule_colors(submodules, layers)
     units = resolve_dependencies(units)
     units = check_layer_violations(units, layers, unit_order, high_level_units_first=high_level_units_first)

@@ -14,6 +14,7 @@ from generate import (
     filter_to_valid_submodules,
     format_units_md,
     generate_layers_draft,
+    package_prefix,
     parse_file,
     resolve_dependencies,
 )
@@ -69,6 +70,21 @@ def test_file_path_to_module_outside_root():
 def test_file_path_to_module_root_init():
     """__init__.py at the root itself returns None (empty module path)."""
     assert file_path_to_module(Path("/root/__init__.py"), Path("/root"), PY_CONFIG) is None
+
+
+def test_file_path_to_module_with_prefix():
+    """Package prefix is prepended so paths match absolute imports (e.g. root is a package)."""
+    assert file_path_to_module(Path("/root/foo/bar.py"), Path("/root"), PY_CONFIG, ("pkg",)) == "pkg.foo.bar"
+    assert file_path_to_module(Path("/root/__init__.py"), Path("/root"), PY_CONFIG, ("pkg",)) == "pkg"
+
+
+def test_package_prefix(tmp_path):
+    """When root itself is a package, its name (and package ancestors) prefix module paths."""
+    (tmp_path / "verimo").mkdir()
+    (tmp_path / "verimo" / "__init__.py").touch()
+    assert package_prefix(tmp_path / "verimo", PY_CONFIG) == ("verimo",)
+    # root without a package marker -> no prefix (backward compatible)
+    assert package_prefix(tmp_path, PY_CONFIG) == ()
 
 
 # =============================================================================
@@ -248,6 +264,33 @@ def test_parse_file_class_collects_all_method_calls():
     units, _ = parse_file(source, "mymod", PY_CONFIG, _parser())
     assert "foo" in units[0].raw_calls
     assert "bar" in units[0].raw_calls
+
+
+def test_parse_file_inlines_private_helper_calls():
+    """A public unit inherits the outgoing calls of same-module private helpers it uses."""
+    source = b"def public():\n    _helper()\n\ndef _helper():\n    other.thing()\n"
+    units, _ = parse_file(source, "mymod", PY_CONFIG, _parser())
+    assert len(units) == 1  # _helper not emitted as a unit
+    assert "other.thing" in units[0].raw_calls  # ...but its dependency survives
+    assert "_helper" not in units[0].raw_calls  # the helper call itself is inlined away
+
+
+def test_parse_file_inlines_transitively():
+    """Private helpers calling private helpers still surface the deepest dependency."""
+    source = b"def public():\n    _a()\n\ndef _a():\n    _b()\n\ndef _b():\n    deep.call()\n"
+    units, _ = parse_file(source, "mymod", PY_CONFIG, _parser())
+    assert "deep.call" in units[0].raw_calls
+
+
+def test_parse_file_private_calls_kept_when_included():
+    """With include_private, helpers become their own units and calls are not inlined."""
+    source = b"def public():\n    _helper()\n\ndef _helper():\n    other.thing()\n"
+    units, _ = parse_file(source, "mymod", PY_CONFIG, _parser(), include_private=True)
+    names = {u.name for u in units}
+    assert names == {"public", "_helper"}
+    public = next(u for u in units if u.name == "public")
+    assert "_helper" in public.raw_calls
+    assert "other.thing" not in public.raw_calls
 
 
 def test_parse_file_imports():
@@ -451,6 +494,19 @@ def test_layers_draft_basic():
     assert draft["submodule_layers"]["api"] == [["api.auth"], ["api.routes"]]
     assert draft["submodule_layers"]["core"] == [["core.db"]]
     assert valid == {"api.auth", "api.routes", "core.db"}
+
+
+def test_layers_draft_strips_shared_root_package():
+    """A common enclosing package is not a layer; group one level deeper."""
+    si = {
+        "pkg.core.analysis.f": UnitInfo("pkg.core.analysis.f", "pkg.core.analysis", "f", "function"),
+        "pkg.core.interp.g": UnitInfo("pkg.core.interp.g", "pkg.core.interp", "g", "function"),
+        "pkg.backend.server.h": UnitInfo("pkg.backend.server.h", "pkg.backend.server", "h", "function"),
+    }
+    draft, _valid = generate_layers_draft(si, {})
+    assert draft["root_layers"] == [["pkg.backend"], ["pkg.core"]]
+    assert draft["submodule_layers"]["pkg.core"] == [["pkg.core.analysis"], ["pkg.core.interp"]]
+    assert draft["submodule_layers"]["pkg.backend"] == [["pkg.backend.server"]]
 
 
 def test_layers_draft_leaf_module():

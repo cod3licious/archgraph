@@ -1,4 +1,5 @@
 import { showSubmoduleDetail, showUnitDetail, clearDetail, setDetail, escapeHtml } from './detail.js';
+import { commonPrefixLen, stripPrefix } from './labels.js';
 
 // ── Load visualization-specific CSS ──────────────────────────────────────────
 const link = document.createElement('link');
@@ -193,10 +194,20 @@ function collectEdges(rows, nodeById, units) {
   return { edges: [...edgeMap.values()], pearlRows, pearlVisualIdx };
 }
 
+// ── Display labels ───────────────────────────────────────────────────────────
+// Modules drop the shared enclosing package (see labels.js); submodules are shown
+// relative to their module; units show only their own name. Full ids stay in tooltips.
+function nodeLabel(node, modPrefixLen) {
+  if (node.level === 'unit') return node.id.split('.').pop();
+  if (node.level === 'submodule') return node.id.slice(node.module.length + 1);
+  return stripPrefix(node.id, modPrefixLen);
+}
+
 // ── Full re-render ───────────────────────────────────────────────────────────
 function renderAll(state) {
   const { hierarchy, nodeById, moduleColors, expanded, submodules, units, treeDiv, canvasDiv } = state;
   const rows = getVisibleRows(hierarchy, expanded);
+  const modPrefixLen = commonPrefixLen(hierarchy.filter(n => n.level === 'module').map(n => n.id));
   const { edges, pearlRows, pearlVisualIdx } = collectEdges(rows, nodeById, units);
 
   treeDiv.innerHTML = '';
@@ -242,9 +253,7 @@ function renderAll(state) {
     // Label
     const label = document.createElement('span');
     label.className = `pearl-label level-${node.level}`;
-    label.textContent = node.level === 'unit' ? node.id.split('.').pop()
-                      : node.level === 'submodule' ? node.id.split('.').slice(1).join('.')
-                      : node.id;
+    label.textContent = nodeLabel(node, modPrefixLen);
     row.appendChild(label);
 
     row.addEventListener('click', () => toggleSelection(state, node.id));

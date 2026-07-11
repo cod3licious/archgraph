@@ -1,4 +1,5 @@
 import { showSubmoduleDetail, showUnitDetail, clearDetail } from './detail.js';
+import { commonPrefixLen, stripPrefix } from './labels.js';
 
 // ── Load visualization-specific CSS ──────────────────────────────────────────
 const link = document.createElement('link');
@@ -54,6 +55,7 @@ export const placeholderHTML = `
 // ── Main render ──────────────────────────────────────────────────────────────
 export function render(data) {
   const { layers, submodules, units } = data;
+  const modPrefixLen = commonPrefixLen(layers.root_layers.flat());
 
   // 1. Determine ordered list of submodules
   const allSubmodules = flattenLayers(layers);
@@ -74,14 +76,14 @@ export function render(data) {
   container.style.height = totalH + 'px';
 
   // 4. Draw layer bands
-  drawBands(container, layout, layers, boxSizes);
+  drawBands(container, layout, layers, boxSizes, modPrefixLen);
 
   // 5. Draw boxes
   const boxEls = {};
   for (const sm of allSubmodules) {
     const pos = layout[sm];
     const sz  = boxSizes[sm];
-    const box = drawBox(container, sm, submodules[sm], pos, sz);
+    const box = drawBox(container, sm, submodules[sm], pos, sz, modPrefixLen);
     boxEls[sm] = box;
   }
 
@@ -252,7 +254,7 @@ function computeLayout(layers, allSubmodules, submodules, boxSizes) {
 }
 
 // ── Draw layer bands ─────────────────────────────────────────────────────────
-function drawBands(container, layout, layers, boxSizes) {
+function drawBands(container, layout, layers, boxSizes, modPrefixLen) {
   const BAND_PAD = BOX_PAD_Y;
   for (const rowModules of layers.root_layers) {
     for (const mod of rowModules) {
@@ -281,7 +283,7 @@ function drawBands(container, layout, layers, boxSizes) {
 
       const label = document.createElement('div');
       label.className = 'layer-label';
-      label.textContent = mod;
+      label.textContent = stripPrefix(mod, modPrefixLen);
       band.appendChild(label);
 
       container.appendChild(band);
@@ -290,7 +292,7 @@ function drawBands(container, layout, layers, boxSizes) {
 }
 
 // ── Draw a submodule box ─────────────────────────────────────────────────────
-function drawBox(container, sm, data, pos, sz) {
+function drawBox(container, sm, data, pos, sz, modPrefixLen) {
   const box = document.createElement('div');
   box.className = 'submodule-box';
   box.dataset.sm = sm;
@@ -302,7 +304,7 @@ function drawBox(container, sm, data, pos, sz) {
 
   const title = document.createElement('div');
   title.className = 'box-title';
-  title.textContent = sm;
+  title.textContent = stripPrefix(sm, modPrefixLen);
   box.appendChild(title);
 
   const unitsDiv = document.createElement('div');
