@@ -84,7 +84,7 @@ Let's describe the `prepare.py` script's functions in a similar manner:
 
 ### prepare.__main__
 
-The script's normal `__main__` function, which parses the commandline arguments, reads the files from the given paths (transforming the JSON into a dict and reading the markdown file as a string), calls `@process_files`, and saves the returned result as `result.json` (in the same folder as the script and `index.html`, independent from where the script was called).
+The script's normal `__main__` function, which parses the commandline arguments, reads `layers.json` and `units.md` from the input folder (transforming the JSON into a dict and reading the markdown file as a string), calls `@process_files`, and saves the returned result as `result.json` in the output folder (by default the input folder).
 
 
 ### prepare.process_files

@@ -12,6 +12,7 @@ from generate import (
     build_index,
     file_path_to_module,
     format_units_md,
+    generate_folder,
     generate_layers_draft,
     package_prefix,
     parse_file,
@@ -26,7 +27,7 @@ from languages import (
     _resolve_relative_import,
     register_languages,
 )
-from prepare import flatten_layers, parse_unit_descriptions
+from prepare import flatten_layers, parse_unit_descriptions, prepare_folder
 
 PY_CONFIG = _make_python_config()
 PY_LANG = ts.Language(tspython.language())
@@ -1134,3 +1135,51 @@ def test_end_to_end_with_class(tmp_path):
     si, im, _ = build_index(pkg)
     deps = resolve_dependencies(si, im)
     assert "models.User" in deps["service.UserService"]
+
+
+def test_generate_folder_output_can_be_prepared(tmp_path):
+    root = _write_files(
+        tmp_path / "pkg",
+        {
+            "api/__init__.py": "",
+            "api/routes.py": "from pkg.core.db import query\n\ndef handle():\n    return query()\n",
+            "core/__init__.py": "",
+            "core/db.py": "def query():\n    pass\n",
+        },
+    )
+    out = tmp_path / "out"
+    generate_folder(root, out)
+    assert "`@core.db.query`" in (out / "units.md").read_text(encoding="utf-8")
+    result = json.loads(prepare_folder(out, out, strict=True).read_text(encoding="utf-8"))
+    assert result["units"]["api.routes.handle"]["dependencies"] == {"core.db.query": True}
+
+
+def test_entry_point_block_becomes_main_unit(tmp_path):
+    root = _write_files(
+        tmp_path / "pkg",
+        {
+            "cli.py": """\
+                import sys
+                from pkg.core import run, check
+
+                def helper():
+                    pass
+
+                if __name__ == '__main__':
+                    args = sys.argv
+                    run(args)
+
+                if "__main__" == __name__:
+                    check()
+            """,
+            "core.py": "def run(args):\n    pass\n\ndef check():\n    pass\n",
+            "lib.py": "if __name__ == 'other':\n    helper()\n",
+        },
+    )
+    si, im, helpers = build_index(root)
+    assert [q for q in si if q.startswith("cli.")] == ["cli.helper", "cli.__main__"]  # kept in source order
+    assert not si["cli.__main__"].is_private
+    assert "lib.__main__" not in si
+    deps = resolve_dependencies(si, im, helpers)
+    assert deps["cli.__main__"] == ["core.run", "core.check"]
+    assert "### cli.__main__\nEntry point in cli." in format_units_md(si, deps)

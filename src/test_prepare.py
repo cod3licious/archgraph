@@ -1,6 +1,8 @@
+import json
 import logging
 import re
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +13,7 @@ from prepare import (
     create_submodules_dict,
     flatten_layers,
     parse_unit_descriptions,
+    prepare_folder,
     process_files,
     resolve_dependencies,
     validate_unit_paths,
@@ -1048,3 +1051,21 @@ def test_process_unit_named_like_submodule_of_self_listed_module_fails(caplog):
     with pytest.raises(ValueError, match="validation failed"):
         _capture(process_files, md, SELF_LISTED_LAYERS, caplog=caplog)
     assert "Unit Is Submodule: core.db" in caplog.text
+
+
+def test_prepare_folder_writes_result_json(tmp_path):
+    example = Path(__file__).parent.parent / "example_data"
+    out = tmp_path / "out"
+    path = prepare_folder(example, out, strict=True)
+    assert path == out / "result.json"
+    expected = process_files(
+        (example / "units.md").read_text(encoding="utf-8"), json.loads((example / "layers.json").read_text(encoding="utf-8"))
+    )
+    assert json.loads(path.read_text(encoding="utf-8")) == expected
+
+
+def test_prepare_folder_strips_bom(tmp_path):
+    (tmp_path / "layers.json").write_text('{"root_layers": [["core"]]}', encoding="utf-8-sig")
+    (tmp_path / "units.md").write_text("### core.first\nFirst unit.\n", encoding="utf-8-sig")
+    result = json.loads(prepare_folder(tmp_path, tmp_path).read_text(encoding="utf-8"))
+    assert list(result["units"]) == ["core.first"]

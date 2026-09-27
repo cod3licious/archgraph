@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import heapq
 import json
 import logging
@@ -29,7 +30,7 @@ class UnitInfo:
     qualified_name: str  # "payments.gateway.charge"
     submodule: str  # "payments.gateway"
     name: str  # "charge"
-    kind: str  # "function" | "class"
+    kind: str  # "function" | "class" | "entry point"
     docstring: str | None = None
     raw_refs: list[str] = field(default_factory=list)  # names / dotted chains referenced in the unit
     is_private: bool = False
@@ -102,6 +103,10 @@ def _def_name_kind(definition: ts.Node | None, config: LanguageConfig) -> tuple[
     return node_text(name_node), kind
 
 
+# Unit holding the refs of a file's script entry point (e.g. Python's `if __name__ == "__main__":` block)
+ENTRY_POINT_NAME = "__main__"
+
+
 def parse_file(
     source: bytes,
     module_path: str,
@@ -114,13 +119,21 @@ def parse_file(
 
     Extracts top-level functions and classes (including decorated ones). Class
     methods are folded into the class unit (their refs become the class's raw_refs),
-    and refs in decorators count as refs of the decorated unit.
+    and refs in decorators count as refs of the decorated unit. Script entry point
+    blocks become a (public) `__main__` unit, so the dependencies of CLI code aren't lost.
     `is_package` marks package files (e.g. __init__.py), whose module path is the
     package itself, which matters for resolving relative imports.
     """
     root = parser.parse(source).root_node
     units: list[UnitInfo] = []
     for child in root.children:
+        if config.is_entry_point(child):
+            entry = next((u for u in units if u.name == ENTRY_POINT_NAME), None)
+            if entry is None:
+                entry = UnitInfo(f"{module_path}.{ENTRY_POINT_NAME}", module_path, ENTRY_POINT_NAME, "entry point")
+                units.append(entry)
+            entry.raw_refs += config.ref_extractor(child)
+            continue
         definition = config.unwrap_definition(child)
         name_kind = _def_name_kind(definition, config)
         if definition is None or name_kind is None:
@@ -488,46 +501,63 @@ def generate_layers_draft(
 # CLI
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    import argparse
-    import sys
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+def generate_folder(
+    input_dir: Path,
+    output_dir: Path,
+    *,
+    include_private: bool = False,
+    exclude_patterns: list[str] | None = None,
+    full_docstrings: bool = False,
+) -> None:
+    """Analyze the codebase in input_dir and write units.md and a draft layers.json to output_dir."""
     register_languages()
-
     if not LANGUAGE_CONFIGS:
-        logger.critical("No tree-sitter language grammars available. Install e.g. tree-sitter-python.")
-        sys.exit(1)
-
-    ap = argparse.ArgumentParser(description="Generate units.md and layers.json from a codebase using tree-sitter.")
-    ap.add_argument("--root", required=True, type=Path, help="Root directory of the codebase to analyze")
-    ap.add_argument("--output", required=True, type=Path, help="Output folder (created if it doesn't exist)")
-    ap.add_argument("--include-private", action="store_true", help="Include private symbols (e.g., `_`-prefixed in Python)")
-    ap.add_argument("--exclude", default="", help="Comma-separated glob patterns for filenames to skip")
-    ap.add_argument(
-        "--full-docstrings", action="store_true", help="Include full docstrings instead of just the first paragraph"
-    )
-    args = ap.parse_args()
-
-    exclude_patterns = [p.strip() for p in args.exclude.split(",") if p.strip()]
+        raise RuntimeError("No tree-sitter language grammars available. Install e.g. tree-sitter-python.")
 
     symbol_index, import_map, helpers = build_index(
-        args.root.resolve(),
-        exclude_patterns=exclude_patterns,
-        include_private=args.include_private,
+        input_dir.resolve(), exclude_patterns=exclude_patterns, include_private=include_private
     )
     logger.info(f"Found {len(symbol_index)} units across {len(import_map)} modules")
-
     deps = resolve_dependencies(symbol_index, import_map, helpers)
-    draft = generate_layers_draft(symbol_index, deps)
 
-    args.output.mkdir(parents=True, exist_ok=True)
-
-    units_path = args.output / "units.md"
-    units_path.write_text(format_units_md(symbol_index, deps, full_docstrings=args.full_docstrings), encoding="utf-8")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    units_path = output_dir / "units.md"
+    units_path.write_text(format_units_md(symbol_index, deps, full_docstrings=full_docstrings), encoding="utf-8")
     logger.info(f"Wrote {units_path}")
-
-    layers_path = args.output / "layers.json"
-    layers_path.write_text(json.dumps(draft, indent=2) + "\n", encoding="utf-8")
+    layers_path = output_dir / "layers.json"
+    layers_path.write_text(json.dumps(generate_layers_draft(symbol_index, deps), indent=2) + "\n", encoding="utf-8")
     logger.info(f"Wrote {layers_path}")
     logger.info("Please adjust the (sub)module layer hierarchy in `layers.json` to reflect the target architecture.")
+
+
+def add_options(parser: argparse.ArgumentParser) -> None:
+    """Add generate's extraction options (shared with archgraph.py)."""
+    parser.add_argument("--include-private", action="store_true", help="Include private symbols (e.g., `_`-prefixed in Python)")
+    parser.add_argument(
+        "--exclude",
+        type=lambda s: [p.strip() for p in s.split(",") if p.strip()],
+        default=[],
+        help="Comma-separated glob patterns for filenames to skip",
+    )
+    parser.add_argument(
+        "--full-docstrings", action="store_true", help="Include full docstrings instead of just the first paragraph"
+    )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    ap = argparse.ArgumentParser(description="Generate units.md and layers.json from a codebase using tree-sitter.")
+    ap.add_argument("--input", required=True, type=Path, help="Root directory of the codebase to analyze")
+    ap.add_argument("--output", required=True, type=Path, help="Folder for units.md and layers.json (created if needed)")
+    add_options(ap)
+    args = ap.parse_args()
+
+    generate_folder(
+        args.input,
+        args.output,
+        include_private=args.include_private,
+        exclude_patterns=args.exclude,
+        full_docstrings=args.full_docstrings,
+    )

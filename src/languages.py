@@ -54,6 +54,7 @@ class LanguageConfig:
     # Top-level node -> the definition it wraps (e.g. a decorated function), or the node itself
     unwrap_definition: Callable[[Node], Node | None]
     is_private: Callable[[str, Node], bool]  # (name, definition_node) -> is private?
+    is_entry_point: Callable[[Node], bool]  # top-level node -> is it a script entry point block?
     docstring_extractor: Callable[[Node], str | None]
     import_extractor: Callable[[Node, str, bool], list[ImportInfo]]  # (module root, module_path, is_package)
     ref_extractor: Callable[[Node], list[str]]  # names / dotted chains referenced in a definition node
@@ -220,6 +221,15 @@ def _python_extract_refs(node: Node) -> list[str]:
     return list(dict.fromkeys(r for r in refs if r.split(".")[0] not in bound))
 
 
+def _python_is_entry_point(node: Node) -> bool:
+    """True for an `if __name__ == "__main__":` block."""
+    condition = node.child_by_field_name("condition") if node.type == "if_statement" else None
+    if condition is None:
+        return False
+    normalized = "".join(node_text(condition).split()).replace("'", '"')
+    return normalized in ('__name__=="__main__"', '"__main__"==__name__')
+
+
 def _python_is_private(name: str, _node: Node) -> bool:
     """In Python, names starting with _ are private by convention."""
     return name.startswith("_")
@@ -235,6 +245,7 @@ def _make_python_config() -> LanguageConfig:
         class_name_field="name",
         unwrap_definition=_python_unwrap_definition,
         is_private=_python_is_private,
+        is_entry_point=_python_is_entry_point,
         docstring_extractor=_python_extract_docstring,
         import_extractor=_python_extract_imports,
         ref_extractor=_python_extract_refs,

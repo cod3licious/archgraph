@@ -220,12 +220,15 @@ for (const btn of document.querySelectorAll('.view-toggle button'))
 
 switchView('box');
 
-fetch('result.json')
+const dataUrl = new URLSearchParams(location.search).get('data') || 'result.json';
+fetch(dataUrl)
   .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
   .then(data => { resultData = data; views[currentView].render(data); })
   .catch(err => {
-    document.getElementById('graph-container').innerHTML =
-      `<p style="padding:24px;color:#b03a2e">Failed to load result.json: ${err.message}</p>`;
+    const msg = document.createElement('p');
+    msg.style.cssText = 'padding:24px;color:#b03a2e';
+    msg.textContent = `Failed to load ${dataUrl}: ${err.message}`;
+    document.getElementById('graph-container').replaceChildren(msg);
   });
 </script>
 </body>

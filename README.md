@@ -15,7 +15,7 @@ While other tools exist to visualize codebases written in a specific programming
 
 2. **`units.md`** — describes every unit (function / class) in plain prose. Dependencies are declared inline using backtick-at notation: `` `@submodule.UnitName` ``. ArchGraph extracts these automatically.
 
-3. **`prepare.py`** — reads both files, resolves all dependencies, validates them against the layer hierarchy, and writes `result.json`.
+3. **`prepare.py`** — reads both files, resolves all dependencies, validates them against the layer hierarchy, and writes `result.json` (by default next to the input files).
 
 4. **Frontend** — reads `result.json` and renders the interactive graph in the browser. Two visualization modes are available:
    - **Box graph** — submodules as boxes with unit lists; dependency arrows appear on click. Good for seeing the contents of each submodule at a glance.
@@ -29,12 +29,11 @@ archgraph/
 │   ├── layers.json       # example e-commerce layer hierarchy
 │   └── units.md          # example e-commerce unit descriptions
 └── src/
+    ├── archgraph.py      # one-stop script: generate + prepare + serve the visualization
     ├── generate.py       # auto-generate units.md from a codebase via tree-sitter
     ├── languages.py      # language-specific tree-sitter configs (Python, extensible)
     ├── prepare.py        # data processing pipeline
-    ├── test_generate.py  # tests for generate.py
-    ├── test_prepare.py   # tests for prepare.py
-    ├── result.json       # output of prepare.py (read by the frontend)
+    ├── test_*.py         # tests for the Python scripts
     ├── index.html        # interactive graph visualization
     └── viz/              # visualization modules (box-graph, pearl-graph, shared helpers + tests)
 ```
@@ -43,19 +42,13 @@ archgraph/
 
 It is recommended to use [uv](https://docs.astral.sh/uv/) to run the script in a virtual environment, but `python` instead of `uv run` in the below commands should work as well, since the script only depends on standard libraries.
 
-**Process a folder** containing `layers.json` and `units.md`:
+Process a folder containing `layers.json` and `units.md`:
 
 ```bash
 uv run src/prepare.py --input example_data
 ```
 
-**Process individual files:**
-
-```bash
-uv run src/prepare.py --layers path/to/layers.json --units path/to/units.md
-```
-
-Output is written to `src/result.json`.
+The output is written to `example_data/result.json`; pass `--output FOLDER` to write it elsewhere.
 
 **Intra-submodule unit ordering:** By default, units within a submodule are expected to be listed low-level first (Python convention: define helper functions at the top, compose them below). If your codebase follows the opposite convention (e.g. Java/C#: high-level entry points first, helpers below), pass `--high-level-units-first`.
 
@@ -70,12 +63,12 @@ bun test src/viz
 
 ### Running the frontend
 
-Open `src/index.html` in a browser served by any static file server. It will read `result.json` from the same directory and render the graph.
+Open `src/index.html` in a browser served by any static file server. It reads the file given by the `data` URL parameter (relative to `index.html`), or `result.json` from the same directory if there is none.
 
 ```bash
-# simple local server, no installation required
-python -m http.server 8000 --directory src
-# then open http://localhost:8000
+# simple local server from the repository root, no installation required
+python -m http.server 8000
+# then open http://localhost:8000/src/?data=../example_data/result.json
 ```
 
 
@@ -84,6 +77,14 @@ python -m http.server 8000 --directory src
 The two input files can describe any codebase. When designing a new software project, it always helps me to sketch out the individual functions and classes this way — and now I can also visualize the result to get a better feeling for what the final implementation would look like. 
 
 If you want to visualize an existing project, you can either generate the necessary input files using the `generate.py` script (using the tree-sitter library; currently only available for Python packages) or with the help of an AI agent.
+
+**Quick start:** `archgraph.py` generates the input files, runs `prepare.py`, and opens the visualization in your browser (served locally until you press Ctrl+C). It accepts all options of `generate.py` and `prepare.py` described here.
+
+```bash
+uv run src/archgraph.py --input /path/to/your/package --output my_project_data/
+```
+
+Note that this regenerates `layers.json`, so it overwrites any changes you made to it. After adapting `layers.json` by hand, run only `prepare.py` and the frontend as described above.
 
 ### File formats
 
@@ -119,12 +120,12 @@ Trailing characters inside the backticks are ignored (e.g., `` `@core.db.execute
 
 ### Auto-generating input files with `generate.py`
 
-`generate.py` uses [tree-sitter](https://tree-sitter.github.io/) to deterministically extract public functions, classes, their docstrings, and cross-module dependencies from a codebase. Dependencies include calls, callbacks, decorators, base classes, and type annotations; they are followed through re-exports (e.g., in `__init__.py`) and through private helpers (whose own dependencies are attributed to their public callers). It writes both `units.md` and a draft `layers.json` into the specified output folder. The (sub)modules in the layers draft are sorted by dependency flow using topological sorting: modules that depend on others (consumers) are placed at the top, modules that are depended upon (providers) at the bottom, and isolated modules with no connections at the very bottom. This gives a reasonable starting point that you should then adapt to represent the target architecture. 
+`generate.py` uses [tree-sitter](https://tree-sitter.github.io/) to deterministically extract public functions, classes, their docstrings, and cross-module dependencies from a codebase. Dependencies include calls, callbacks, decorators, base classes, and type annotations (script entry points like `if __name__ == "__main__":` blocks become a `__main__` unit); they are followed through re-exports (e.g., in `__init__.py`) and through private helpers (whose own dependencies are attributed to their public callers). It writes both `units.md` and a draft `layers.json` into the specified output folder. The (sub)modules in the layers draft are sorted by dependency flow using topological sorting: modules that depend on others (consumers) are placed at the top, modules that are depended upon (providers) at the bottom, and isolated modules with no connections at the very bottom. This gives a reasonable starting point that you should then adapt to represent the target architecture. 
 
 Currently Python is supported out of the box; see below for how to add other languages.
 
 ```bash
-uv run src/generate.py --root /path/to/your/package --output my_project_data/
+uv run src/generate.py --input /path/to/your/package --output my_project_data/
 ```
 
 Additional options:
@@ -137,6 +138,7 @@ Currently only Python is supported. Adding a new language requires three steps i
 1. **Write a config factory** (e.g., `_make_javascript_config()`) that returns a `LanguageConfig` with:
    - `extensions` / `package_filenames` — file extensions and directory-level filenames (e.g., `{"js", "jsx"}` / `{"index"}`)
    - `function_node_types` / `class_node_types` — tree-sitter AST node types for definitions
+   - `is_entry_point` — a function that tells whether a top-level node is a script entry point block (e.g., `if __name__ == "__main__":`)
    - `unwrap_definition` — a function that returns the definition wrapped by a top-level node (e.g., a decorated function), or `None` to skip it
    - `docstring_extractor` — a function that extracts a docstring from a definition node (e.g., JSDoc comments, Javadoc)
    - `import_extractor` — a function that extracts imports as `ImportInfo(local_name, qualified_name)` from a module AST (given the module path and whether the file is a package file like `__init__.py`)

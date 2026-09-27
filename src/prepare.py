@@ -1,3 +1,4 @@
+import argparse
 import colorsys
 import json
 import logging
@@ -271,17 +272,21 @@ def process_files(unit_descriptions: str, layers: dict, *, high_level_units_firs
     }
 
 
-if __name__ == "__main__":
-    import argparse
-    import sys
+def prepare_folder(input_dir: Path, output_dir: Path, *, high_level_units_first: bool = False, strict: bool = False) -> Path:
+    """Process input_dir/layers.json and input_dir/units.md into output_dir/result.json; returns its path."""
+    # utf-8-sig strips a BOM, which would otherwise break the JSON parsing and hide the first unit heading
+    layers = json.loads((input_dir / "layers.json").read_text(encoding="utf-8-sig"))
+    unit_descriptions = (input_dir / "units.md").read_text(encoding="utf-8-sig")
+    result = process_files(unit_descriptions, layers, high_level_units_first=high_level_units_first, strict=strict)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "result.json"
+    output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info(f"Saved result to {output_path}")
+    return output_path
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    parser = argparse.ArgumentParser(description="Process architecture files into result.json")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--input", metavar="FOLDER", help="Folder containing layers.json and units.md")
-    group.add_argument("--layers", metavar="FILE", help="Path to layers.json")
-    parser.add_argument("--units", metavar="FILE", help="Path to units.md (required when --layers is used)")
+def add_options(parser: argparse.ArgumentParser) -> None:
+    """Add prepare's processing options (shared with archgraph.py)."""
     parser.add_argument(
         "--high-level-units-first",
         action="store_true",
@@ -289,28 +294,25 @@ if __name__ == "__main__":
         "Default assumes low-level units first (Python convention).",
     )
     parser.add_argument("--strict", action="store_true", help="Fail if any `@` reference cannot be resolved to a unit.")
+
+
+if __name__ == "__main__":
+    import sys
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    parser = argparse.ArgumentParser(description="Process layers.json and units.md into result.json")
+    parser.add_argument(
+        "--input", required=True, type=Path, metavar="FOLDER", help="Folder containing layers.json and units.md"
+    )
+    parser.add_argument("--output", type=Path, metavar="FOLDER", help="Folder for result.json (default: the input folder)")
+    add_options(parser)
     args = parser.parse_args()
 
-    if args.input:
-        base = Path(args.input)
-        layers_path, units_path = base / "layers.json", base / "units.md"
-    else:
-        if not args.units:
-            parser.error("--units is required when --layers is used")
-        layers_path, units_path = Path(args.layers), Path(args.units)
-
-    # utf-8-sig strips a BOM, which would otherwise break the JSON parsing and hide the first unit heading
-    layers_data = json.loads(layers_path.read_text(encoding="utf-8-sig"))
-    unit_descriptions = units_path.read_text(encoding="utf-8-sig")
-
     try:
-        result = process_files(
-            unit_descriptions, layers_data, high_level_units_first=args.high_level_units_first, strict=args.strict
+        prepare_folder(
+            args.input, args.output or args.input, high_level_units_first=args.high_level_units_first, strict=args.strict
         )
-    except ValueError as e:
+    except (OSError, ValueError) as e:
         logger.critical(str(e))
         sys.exit(1)
-
-    output_path = Path(__file__).parent / "result.json"
-    output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
-    logger.info(f"Saved result to {output_path}")
