@@ -28,14 +28,16 @@ archgraph/
 ├── example_data/
 │   ├── layers.json       # example e-commerce layer hierarchy
 │   └── units.md          # example e-commerce unit descriptions
-└── src/
-    ├── archgraph.py      # one-stop script: generate + prepare + serve the visualization
-    ├── generate.py       # auto-generate units.md from a codebase via tree-sitter
-    ├── languages.py      # language-specific tree-sitter configs (Python, extensible)
-    ├── prepare.py        # data processing pipeline
-    ├── test_*.py         # tests for the Python scripts
-    ├── index.html        # interactive graph visualization
-    └── viz/              # visualization modules (box-graph, pearl-graph, shared helpers + tests)
+├── frontend/
+│   ├── index.html        # interactive graph visualization
+│   └── viz/              # visualization modules (box-graph, pearl-graph, shared helpers + tests)
+├── src/
+│   ├── archgraph.py      # one-stop script: generate + prepare + serve the visualization
+│   ├── generate.py       # auto-generate units.md from a codebase via tree-sitter
+│   ├── languages/        # language-specific tree-sitter configs (one file per language + shared base)
+│   └── prepare.py        # data processing pipeline
+├── tests/                # tests for the Python scripts
+└── sketch.md             # initial design notes (outdated, the code has evolved since)
 ```
 
 ### Running the data pipeline
@@ -57,18 +59,18 @@ The output is written to `example_data/result.json`; pass `--output FOLDER` to w
 **Run the tests:**
 
 ```bash
-uv run pytest src/
-bun test src/viz
+uv run pytest
+bun test frontend
 ```
 
 ### Running the frontend
 
-Open `src/index.html` in a browser served by any static file server. It reads the file given by the `data` URL parameter (relative to `index.html`), or `result.json` from the same directory if there is none.
+Open `frontend/index.html` in a browser served by any static file server. It reads the file given by the `data` URL parameter (relative to `index.html`), or `result.json` from the same directory if there is none.
 
 ```bash
 # simple local server from the repository root, no installation required
 python -m http.server 8000
-# then open http://localhost:8000/src/?data=../example_data/result.json
+# then open http://localhost:8000/frontend/?data=../example_data/result.json
 ```
 
 
@@ -134,9 +136,9 @@ Additional options:
 - `--full-docstrings` - include full docstrings in unit descriptions (by default only the first paragraph is used)
 - `--max-row-width 5` - max (sub)modules per row in the layers draft (default 5; 0 = unlimited)
 
-Currently only Python is supported. Adding a new language requires three steps in `src/languages.py`:
+Currently only Python is supported. Adding a new language requires three steps in `src/languages/`:
 
-1. **Write a config factory** (e.g., `_make_javascript_config()`) that returns a `LanguageConfig` with:
+1. **Write a config factory** in a new file (e.g., `make_config()` in `javascript.py`) that returns a `LanguageConfig` with:
    - `extensions` / `package_filenames` — file extensions and directory-level filenames (e.g., `{"js", "jsx"}` / `{"index"}`)
    - `function_node_types` / `class_node_types` — tree-sitter AST node types for definitions
    - `is_entry_point` — a function that tells whether a top-level node is a script entry point block (e.g., `if __name__ == "__main__":`)
@@ -145,7 +147,7 @@ Currently only Python is supported. Adding a new language requires three steps i
    - `import_extractor` — a function that extracts imports as `ImportInfo(local_name, qualified_name)` from a module AST (given the module path and whether the file is a package file like `__init__.py`)
    - `ref_extractor` — a function that extracts referenced names and dotted chains (calls, callbacks, base classes, ...) from a definition node
 2. **Install the grammar** — add the corresponding `tree-sitter-<language>` package to the `generate` dependency group in `pyproject.toml`.
-3. **Register it** — add an entry in `register_languages()`.
+3. **Register it** — add an entry in `register_languages()` in `__init__.py`.
 
 The main script (`generate.py`) is fully language-agnostic: it uses the config to parse files, then resolves dependencies by checking which calls land in the project's symbol index.
 

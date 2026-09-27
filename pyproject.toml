@@ -74,6 +74,7 @@ ignore = ["E501", # Line too long
 # Ignore `E402` (import violations) in all `__init__.py` files, and in `path/to/file.py`.
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["E402"]
+"tests/*" = ["INP001"] # tests are not a package
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -89,4 +90,6 @@ section-order = ["future", "standard-library", "third-party", "first-party", "te
 [tool.pytest.ini_options]
 minversion = "6.0"
 addopts = "--disable-warnings"
+pythonpath = ["src"]
+testpaths = ["tests"]
 markers = ["slow"]
