@@ -2,82 +2,96 @@ import colorsys
 import json
 import logging
 import re
+from collections.abc import Collection
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# CommonMark allows up to 3 spaces of indentation for headings and code fences
+HEADING_RE = re.compile(r" {0,3}###(?=[ \t]|$)(.*)")
+FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
+# Group 1 is everything inside the backticks after the @, group 2 the unit path (trailing "()", "," etc. ignored)
+REF_RE = re.compile(r"`@((\w+(?:\.\w+)*)?[^`\n]*)`")
 
-def parse_unit_descriptions(unit_descriptions: str) -> tuple[dict, dict]:
-    """Parse markdown → (units dict, unit_order dict).
 
-    unit_order maps submodule → list of short unit *names* (not full paths),
-    in the order they appear in the file.
+def parse_unit_descriptions(unit_descriptions: str) -> dict[str, dict]:
+    """Parse markdown -> units dict {unit_path: {submodule, name, description, dependencies}}.
+
+    Units keep the order in which they appear in the file. Text before the first
+    heading is ignored and '###' lines inside fenced code blocks are part of the description.
     """
+    sections: dict[str, list[str]] = {}
+    body: list[str] = []
+    fence = ""
+    for line in unit_descriptions.splitlines():
+        heading = None if fence else HEADING_RE.match(line)
+        if heading:
+            unit_path = heading.group(1).strip()
+            if not unit_path:
+                raise ValueError("Empty unit heading: '###' without a unit path")
+            if unit_path in sections:
+                raise ValueError(f"Duplicate unit path: {unit_path}")
+            if "." not in unit_path:
+                raise ValueError(f"Unit path has no dot separator: {unit_path!r}")
+            body = sections[unit_path] = []
+            continue
+        body.append(line)
+        # A fence is closed by a fence of the same character that is at least as long
+        if (fence_match := FENCE_RE.match(line)) and (not fence or fence_match.group(1).startswith(fence)):
+            fence = "" if fence else fence_match.group(1)
+    if fence:
+        logger.warning(f"Unclosed code fence ({fence}): all following '###' headings were treated as description text")
+
     units: dict[str, dict] = {}
-    unit_order: dict[str, list[str]] = {}
-
-    pattern = re.compile(r"^### ([^\n]+)\n(.*?)(?=^### |\Z)", re.MULTILINE | re.DOTALL)
-    for header, body in pattern.findall(unit_descriptions):
-        unit_path = header.strip()
-        description = body.strip()
-
-        if unit_path in units:
-            raise ValueError(f"Duplicate unit path: {unit_path}")
-        if "." not in unit_path:
-            raise ValueError(f"Unit path has no dot separator: {unit_path!r}")
-
-        dot = unit_path.rfind(".")
-        submodule, name = unit_path[:dot], unit_path[dot + 1 :]
-        dependencies = dict.fromkeys(re.findall(r"`@([\w.]+)`", description), True)
-
+    for unit_path, lines in sections.items():
+        submodule, _, name = unit_path.rpartition(".")
+        description = "\n".join(lines).strip()
+        # Unparseable references are kept verbatim so resolve_dependencies reports them as unresolved
+        refs = [ref_path or raw for raw, ref_path in REF_RE.findall(description)]
         units[unit_path] = {
             "submodule": submodule,
             "name": name,
             "description": description,
-            "dependencies": dependencies,
+            "dependencies": dict.fromkeys(refs, True),
         }
-        unit_order.setdefault(submodule, []).append(name)  # short name, not full path
-
-    return units, unit_order
+    return units
 
 
-def flatten_layers(layers: dict) -> list[str]:
-    """Flatten root_layers/submodule_layers JSON into an ordered list of submodules.
+def _is_rows(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(row, list) and all(isinstance(x, str) for x in row) for row in value)
 
-    Iterates root_layers (list of lists). For each module:
-    - If it has an entry in submodule_layers, expand its sub-rows in order.
-    - Otherwise it is a leaf module and is added directly.
 
-    The structure is exactly 2 levels deep (root → submodule), so no recursion
-    is needed. O(total submodules).
+def flatten_layers(layers: dict) -> dict[str, tuple[int, int, str]]:
+    """Validate layers.json and flatten it into an ordered {submodule: (root_row_idx, intra_row_idx, module)} dict.
+
+    root_row_idx:  position of the submodule's module in root_layers.
+    intra_row_idx: position of the submodule's row within its module's submodule_layers.
+    module:        the root module the submodule belongs to.
+
+    A module without an entry in submodule_layers is a leaf and acts as its own
+    (only) submodule. A module may also list itself in its submodule_layers to hold
+    units defined directly at the module level next to its submodules.
     """
-    root_layers: list[list[str]] = layers["root_layers"]
-    submodule_layers: dict[str, list[list[str]]] = layers["submodule_layers"]
+    if not isinstance(layers, dict) or not _is_rows(layers.get("root_layers")):
+        raise ValueError("Invalid layers: 'root_layers' must be a list of lists of strings")
+    submodule_layers = layers.get("submodule_layers", {})
+    if not isinstance(submodule_layers, dict) or not all(_is_rows(rows) for rows in submodule_layers.values()):
+        raise ValueError("Invalid layers: 'submodule_layers' must map module names to lists of lists of strings")
 
-    all_submodules: list[str] = []
-    seen: set[str] = set()
-
-    def _add(sm: str) -> None:
-        if sm in seen:
-            raise ValueError(f"Duplicate submodule: '{sm}'")
-        seen.add(sm)
-        all_submodules.append(sm)
-
-    for root_row in root_layers:
+    sm_info: dict[str, tuple[int, int, str]] = {}
+    for root_row_idx, root_row in enumerate(layers["root_layers"]):
         for module in root_row:
-            if module not in submodule_layers:
-                _add(module)
-            else:
-                for sub_row in submodule_layers[module]:
-                    for sm in sub_row:
-                        if not sm.startswith(module + "."):
-                            raise ValueError(f"Submodule '{sm}' does not start with parent module '{module}'")
-                        _add(sm)
-
-    return all_submodules
+            for intra_row_idx, sub_row in enumerate(submodule_layers.get(module, [[module]])):
+                for sm in sub_row:
+                    if sm != module and not sm.startswith(module + "."):
+                        raise ValueError(f"Submodule '{sm}' does not start with parent module '{module}'")
+                    if sm in sm_info:
+                        raise ValueError(f"Duplicate submodule: '{sm}'")
+                    sm_info[sm] = (root_row_idx, intra_row_idx, module)
+    return sm_info
 
 
-def validate_unit_paths(units: dict, all_submodules: list[str]) -> bool:
+def validate_unit_paths(units: dict, all_submodules: Collection[str]) -> bool:
     """Return True iff all unit paths are valid w.r.t. the submodule list."""
     submodule_set = set(all_submodules)
     valid = True
@@ -94,27 +108,22 @@ def validate_unit_paths(units: dict, all_submodules: list[str]) -> bool:
     return valid
 
 
-def create_submodules_dict(all_submodules: list[str], unit_order: dict, sm_to_module: dict[str, str] | None = None) -> dict:
-    """Build the submodules dict with default metadata.
+def create_submodules_dict(sm_info: dict[str, tuple[int, int, str]], units: dict) -> dict:
+    """Build the submodules dict with default metadata from flatten_layers' result.
 
-    unit_order contains short unit names (not full paths); they are stored
-    directly in 'units' for use by the frontend.
-
-    A submodule's 'module' is the root layer it belongs to. This is defined by the
-    layer hierarchy, so callers pass sm_to_module (built from the layers). Without
-    it we fall back to the first path segment, which only matches when modules are
-    named at the top level (no shared enclosing package).
+    'units' holds the short unit names (not full paths) in the order they appear in units.
     """
-    sm_to_module = sm_to_module or {}
+    unit_names: dict[str, list[str]] = {}
+    for unit in units.values():
+        unit_names.setdefault(unit["submodule"], []).append(unit["name"])
     submodules: dict[str, dict] = {}
-    for sm in all_submodules:
-        units_list = unit_order.get(sm, [])
-        if not units_list:
+    for sm, (_, _, module) in sm_info.items():
+        if sm not in unit_names:
             logger.warning(f"Submodule {sm} has no units")
         submodules[sm] = {
-            "module": sm_to_module.get(sm, sm.split(".")[0]),
+            "module": module,
             "color": "#D3D3D3",
-            "units": units_list,
+            "units": unit_names.get(sm, []),
             "dependencies": {},
         }
     return submodules
@@ -123,8 +132,8 @@ def create_submodules_dict(all_submodules: list[str], unit_order: dict, sm_to_mo
 def assign_submodule_colors(submodules: dict, layers: dict) -> dict:
     """Assign muted earthy colors by root module.
 
-    Hues are spread evenly across 0.0-0.85 of the hue wheel (terracotta →
-    ochre → sage → dusty teal → muted violet), skipping the 0.85-1.0 cyan/
+    Hues are spread evenly across 0.0-0.85 of the hue wheel (terracotta ->
+    ochre -> sage -> dusty teal -> muted violet), skipping the 0.85-1.0 cyan/
     electric-blue range. Lower lightness (0.80) and saturation (0.40) give a
     clay-like quality instead of candy pastels.
     Does not modify the input dict.
@@ -137,20 +146,21 @@ def assign_submodule_colors(submodules: dict, layers: dict) -> dict:
         r, g, b = colorsys.hls_to_rgb(h, 0.80, 0.40)
         module_colors[module] = f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
 
-    # Shallow-copy each submodule dict — only 'color' is being replaced, and all
+    # Shallow-copy each submodule dict - only 'color' is being replaced, and all
     # other values (units list, dependencies dict) are not mutated here.
     return {sm: {**sm_data, "color": module_colors.get(sm_data["module"], "#D3D3D3")} for sm, sm_data in submodules.items()}
 
 
-def resolve_dependencies(units: dict) -> dict:
+def resolve_dependencies(units: dict, *, strict: bool = False) -> dict:
     """Resolve @-references to valid unit paths; remove/warn on bad ones.
 
-    Edge cases (in priority order):
-    1. Self-dependency → silently removed (not an error).
-    2. Exact match in units → kept as True.
-    3. One dot-strip resolves to an existing unit (sub-method ref) → matched
+    Edge cases:
+    1. Exact match in units -> kept as True.
+    2. One dot-strip resolves to an existing unit (sub-method ref) -> matched
        with a WARNING; deduplicates if the parent was already listed.
-    4. Unresolvable → ERROR logged, removed.
+    3. Resolves to the unit itself (recursion, own method) -> silently removed.
+    4. Unresolvable -> ERROR logged, removed. With strict=True, a ValueError is
+       raised after all of them were logged.
 
     Shallow-copies each unit dict, replacing only the 'dependencies' value.
     O(U * D) where U = units, D = max dependencies per unit.
@@ -161,54 +171,28 @@ def resolve_dependencies(units: dict) -> dict:
     for unit_path, unit in units.items():
         resolved: dict[str, bool] = {}
         for dep in unit["dependencies"]:
-            if dep == unit_path:
-                continue  # silent self-dep removal
-            if dep in units:
-                resolved[dep] = True
-            else:
-                # Try stripping the last segment (e.g. Model.predict → Model)
-                parent = dep.rsplit(".", 1)[0] if "." in dep else None
-                if parent and parent in units:
-                    logger.warning(f"{unit_path} dependency {dep} was matched to {parent}")
-                    resolved.setdefault(parent, True)  # deduplicates multiple sub-refs
-                else:
-                    logger.error(f"Referenced Unit Unknown: {unit_path} depends on {dep}, which could not be resolved")
-                    error_count += 1
+            target = dep if dep in units else dep.rpartition(".")[0]
+            if target not in units:
+                logger.error(f"Referenced Unit Unknown: {unit_path} depends on {dep}, which could not be resolved")
+                error_count += 1
+            elif target != unit_path:
+                if target != dep:
+                    logger.warning(f"{unit_path} dependency {dep} was matched to {target}")
+                resolved[target] = True
         result[unit_path] = {**unit, "dependencies": resolved}
 
     logger.info(f"Dependency resolution completed with {error_count} error(s)")
+    if strict and error_count:
+        raise ValueError(f"{error_count} referenced unit(s) could not be resolved (strict mode)")
     return result
 
 
-def _build_sm_info(layers: dict) -> dict[str, tuple[int, int, str]]:
-    """Map each submodule → (root_row_idx, intra_row_idx, root_module).
-
-    root_row_idx:  position of this submodule's root module in root_layers.
-    intra_row_idx: position of this submodule's row within its root module's
-                   submodule_layers (leaf modules get index 0).
-    root_module:   the top-level module name.
-
-    Built in O(S). Used by check_layer_violations for O(1) per-dep checks.
-    """
-    root_layers: list[list[str]] = layers["root_layers"]
-    submodule_layers: dict[str, list[list[str]]] = layers["submodule_layers"]
-    sm_info: dict[str, tuple[int, int, str]] = {}
-    for root_row_idx, root_row in enumerate(root_layers):
-        for module in root_row:
-            if module not in submodule_layers:
-                sm_info[module] = (root_row_idx, 0, module)
-            else:
-                for intra_row_idx, sub_row in enumerate(submodule_layers[module]):
-                    for sm in sub_row:
-                        sm_info[sm] = (root_row_idx, intra_row_idx, module)
-    return sm_info
-
-
-def check_layer_violations(units: dict, layers: dict, unit_order: dict, *, high_level_units_first: bool = False) -> dict:
-    """Flag dependencies that violate the layer hierarchy.
+def check_layer_violations(
+    units: dict, sm_info: dict[str, tuple[int, int, str]], *, high_level_units_first: bool = False
+) -> dict:
+    """Flag dependencies that violate the layer hierarchy (sm_info from flatten_layers).
 
     A dependency from unit_a -> unit_b is allowed iff:
-    - unit_a == unit_b (self-dep, already removed), or
     - Cross-submodule: sm_b is in a strictly lower root-layer row than sm_a,
       or sm_a and sm_b share the same root module AND sm_b is in a strictly
       lower intra-module row.
@@ -218,42 +202,30 @@ def check_layer_violations(units: dict, layers: dict, unit_order: dict, *, high_
       high_level_units_first=True (e.g. Java/C#), a unit may only depend
       on units *below* it (higher index).
 
-    Setup is O(S + U), each dependency check is O(1). Total: O(S + U*D).
+    Each dependency check is O(1). Total: O(U*D).
     Does not modify the input dict.
     """
-    sm_info = _build_sm_info(layers)
-
-    # Build unit position index within each submodule: unit_path -> index
-    unit_pos: dict[str, int] = {}
-    for sm, names in unit_order.items():
-        for idx, name in enumerate(names):
-            unit_pos[f"{sm}.{name}"] = idx
-
+    # Global position suffices, since only units within the same submodule are compared
+    unit_pos = {unit_path: idx for idx, unit_path in enumerate(units)}
     result: dict[str, dict] = {}
 
     for unit_path, unit in units.items():
         rr_a, ir_a, root_a = sm_info[unit["submodule"]]
-        pos_a = unit_pos.get(unit_path, 0)
         resolved: dict[str, bool] = {}
         for dep_path, valid in unit["dependencies"].items():
             sm_b = units[dep_path]["submodule"]
             if unit["submodule"] == sm_b:
                 # Intra-submodule: direction depends on convention
-                pos_b = unit_pos.get(dep_path, 0)
+                pos_a, pos_b = unit_pos[unit_path], unit_pos[dep_path]
                 allowed = pos_b > pos_a if high_level_units_first else pos_b < pos_a
                 if not allowed:
                     logger.warning(f"Architecture Validation (intra-submodule): {unit_path} must not depend on {dep_path}")
-                    resolved[dep_path] = False
-                else:
-                    resolved[dep_path] = valid
-                continue
-            rr_b, ir_b, root_b = sm_info[sm_b]
-            allowed = rr_b > rr_a or (rr_b == rr_a and root_a == root_b and ir_b > ir_a)
-            if not allowed:
-                logger.warning(f"Architecture Validation: {unit_path} must not depend on {dep_path}")
-                resolved[dep_path] = False
             else:
-                resolved[dep_path] = valid
+                rr_b, ir_b, root_b = sm_info[sm_b]
+                allowed = rr_b > rr_a or (rr_b == rr_a and root_a == root_b and ir_b > ir_a)
+                if not allowed:
+                    logger.warning(f"Architecture Validation: {unit_path} must not depend on {dep_path}")
+            resolved[dep_path] = valid and allowed
         result[unit_path] = {**unit, "dependencies": resolved}
 
     return result
@@ -272,31 +244,31 @@ def assign_submodule_dependencies(submodules: dict, units: dict) -> dict:
     sm_deps: dict[str, dict[str, bool]] = {sm: {} for sm in submodules}
     for unit in units.values():
         sm_src = unit["submodule"]
-        if sm_src not in sm_deps:
-            continue
         deps = sm_deps[sm_src]
         for dep_unit_path, valid in unit["dependencies"].items():
-            dep_sm = dep_unit_path.rsplit(".", 1)[0]
+            dep_sm = units[dep_unit_path]["submodule"]
             if dep_sm == sm_src:
-                continue  # intra-submodule dep — no arrow
-            # False (violation) takes priority: once False, never set back to True
-            if dep_sm not in deps or (not valid and deps[dep_sm]):
-                deps[dep_sm] = valid
+                continue  # intra-submodule dep - no arrow
+            deps[dep_sm] = deps.get(dep_sm, True) and valid
     return {sm: {**sm_data, "dependencies": sm_deps[sm]} for sm, sm_data in submodules.items()}
 
 
-def process_files(unit_descriptions: str, layers: dict, *, high_level_units_first: bool = False) -> dict:
-    units, unit_order = parse_unit_descriptions(unit_descriptions)
-    all_submodules = flatten_layers(layers)
-    if not validate_unit_paths(units, all_submodules):
-        raise ValueError("Unit path validation failed — see errors above")
-    sm_to_module = {sm: info[2] for sm, info in _build_sm_info(layers).items()}
-    submodules = create_submodules_dict(all_submodules, unit_order, sm_to_module)
+def process_files(unit_descriptions: str, layers: dict, *, high_level_units_first: bool = False, strict: bool = False) -> dict:
+    units = parse_unit_descriptions(unit_descriptions)
+    sm_info = flatten_layers(layers)
+    if not validate_unit_paths(units, sm_info):
+        raise ValueError("Unit path validation failed - see errors above")
+    submodules = create_submodules_dict(sm_info, units)
     submodules = assign_submodule_colors(submodules, layers)
-    units = resolve_dependencies(units)
-    units = check_layer_violations(units, layers, unit_order, high_level_units_first=high_level_units_first)
+    units = resolve_dependencies(units, strict=strict)
+    units = check_layer_violations(units, sm_info, high_level_units_first=high_level_units_first)
     submodules = assign_submodule_dependencies(submodules, units)
-    return {"layers": layers, "submodules": submodules, "units": units, "high_level_units_first": high_level_units_first}
+    return {
+        "layers": {"submodule_layers": {}, **layers},
+        "submodules": submodules,
+        "units": units,
+        "high_level_units_first": high_level_units_first,
+    }
 
 
 if __name__ == "__main__":
@@ -316,6 +288,7 @@ if __name__ == "__main__":
         help="Assume high-level units are listed before their dependencies (e.g. Java/C#). "
         "Default assumes low-level units first (Python convention).",
     )
+    parser.add_argument("--strict", action="store_true", help="Fail if any `@` reference cannot be resolved to a unit.")
     args = parser.parse_args()
 
     if args.input:
@@ -326,11 +299,14 @@ if __name__ == "__main__":
             parser.error("--units is required when --layers is used")
         layers_path, units_path = Path(args.layers), Path(args.units)
 
-    layers_data = json.loads(layers_path.read_text(encoding="utf-8"))
-    unit_descriptions = units_path.read_text(encoding="utf-8")
+    # utf-8-sig strips a BOM, which would otherwise break the JSON parsing and hide the first unit heading
+    layers_data = json.loads(layers_path.read_text(encoding="utf-8-sig"))
+    unit_descriptions = units_path.read_text(encoding="utf-8-sig")
 
     try:
-        result = process_files(unit_descriptions, layers_data, high_level_units_first=args.high_level_units_first)
+        result = process_files(
+            unit_descriptions, layers_data, high_level_units_first=args.high_level_units_first, strict=args.strict
+        )
     except ValueError as e:
         logger.critical(str(e))
         sys.exit(1)

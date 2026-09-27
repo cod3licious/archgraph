@@ -19,7 +19,7 @@ While other tools exist to visualize codebases written in a specific programming
 
 4. **Frontend** — reads `result.json` and renders the interactive graph in the browser. Two visualization modes are available:
    - **Box graph** — submodules as boxes with unit lists; dependency arrows appear on click. Good for seeing the contents of each submodule at a glance.
-   - **Pearl graph** — a vertical hierarchy with collapsible modules/submodules and arc-based dependency lines (inspired by [Sonargraph](https://www.hello2morrow.com/products/sonargraph/architect)). Green arcs on the left show valid top-to-bottom dependencies; red arcs on the right show violations. Good for focusing on dependency flow and layer violations.
+   - **Pearl graph** — a vertical hierarchy with collapsible modules/submodules and arc-based dependency lines (inspired by [Sonargraph](https://www.hello2morrow.com/products/sonargraph/architect)). Green arcs on the left show valid top-to-bottom dependencies; red arcs show violations (on the right when pointing up, on the left when pointing down, e.g., between siblings in the same layer). Good for focusing on dependency flow and layer violations.
 
 ### Project structure
 
@@ -36,7 +36,7 @@ archgraph/
     ├── test_prepare.py   # tests for prepare.py
     ├── result.json       # output of prepare.py (read by the frontend)
     ├── index.html        # interactive graph visualization
-    └── viz/              # visualization modules (box-graph, pearl-graph, shared)
+    └── viz/              # visualization modules (box-graph, pearl-graph, shared helpers + tests)
 ```
 
 ### Running the data pipeline
@@ -59,10 +59,13 @@ Output is written to `src/result.json`.
 
 **Intra-submodule unit ordering:** By default, units within a submodule are expected to be listed low-level first (Python convention: define helper functions at the top, compose them below). If your codebase follows the opposite convention (e.g. Java/C#: high-level entry points first, helpers below), pass `--high-level-units-first`.
 
+**Strict mode:** Unresolvable `@` references are logged as errors and dropped from the graph. Pass `--strict` to make the run fail instead.
+
 **Run the tests:**
 
 ```bash
 uv run pytest src/
+bun test src/viz
 ```
 
 ### Running the frontend
@@ -84,7 +87,7 @@ If you want to visualize an existing project, you can either generate the necess
 
 ### File formats
 
-**`layers.json`** — a two-level hierarchy. `root_layers` is a list of rows; within each row modules are siblings (no dependency allowed between them). `submodule_layers` optionally breaks each root module into its own sub-rows following the same rule.
+**`layers.json`** — a two-level hierarchy. `root_layers` is a list of rows; within each row modules are siblings (no dependency allowed between them). `submodule_layers` optionally breaks each root module into its own sub-rows following the same rule. A module may also list itself as one of its submodules to hold units defined directly at the module level (e.g., in a Python `__init__.py`), like `"core": [["core.service"], ["core"], ["core.db"]]`.
 
 ```json
 {
@@ -111,10 +114,12 @@ Creates a new order record. Calls `@services.catalog.get_product` to validate
 line items and `@core.db.execute` to persist the order.
 ```
 
+Trailing characters inside the backticks are ignored (e.g., `` `@core.db.execute()` ``), and `###` lines inside fenced code blocks are not treated as unit headings.
+
 
 ### Auto-generating input files with `generate.py`
 
-`generate.py` uses [tree-sitter](https://tree-sitter.github.io/) to deterministically extract public functions, classes, their docstrings, and cross-module dependencies from a codebase. It writes both `units.md` and a draft `layers.json` into the specified output folder. The (sub)modules in the layers draft are sorted by dependency flow using topological sorting: modules that depend on others (consumers) are placed at the top, modules that are depended upon (providers) at the bottom, and isolated modules with no connections at the very bottom. This gives a reasonable starting point that you should then adapt to represent the target architecture. 
+`generate.py` uses [tree-sitter](https://tree-sitter.github.io/) to deterministically extract public functions, classes, their docstrings, and cross-module dependencies from a codebase. Dependencies include calls, callbacks, decorators, base classes, and type annotations; they are followed through re-exports (e.g., in `__init__.py`) and through private helpers (whose own dependencies are attributed to their public callers). It writes both `units.md` and a draft `layers.json` into the specified output folder. The (sub)modules in the layers draft are sorted by dependency flow using topological sorting: modules that depend on others (consumers) are placed at the top, modules that are depended upon (providers) at the bottom, and isolated modules with no connections at the very bottom. This gives a reasonable starting point that you should then adapt to represent the target architecture. 
 
 Currently Python is supported out of the box; see below for how to add other languages.
 
@@ -132,9 +137,10 @@ Currently only Python is supported. Adding a new language requires three steps i
 1. **Write a config factory** (e.g., `_make_javascript_config()`) that returns a `LanguageConfig` with:
    - `extensions` / `package_filenames` — file extensions and directory-level filenames (e.g., `{"js", "jsx"}` / `{"index"}`)
    - `function_node_types` / `class_node_types` — tree-sitter AST node types for definitions
+   - `unwrap_definition` — a function that returns the definition wrapped by a top-level node (e.g., a decorated function), or `None` to skip it
    - `docstring_extractor` — a function that extracts a docstring from a definition node (e.g., JSDoc comments, Javadoc)
-   - `import_extractor` — a function that extracts imports as `ImportInfo(local_name, qualified_name)` from a module AST
-   - `call_extractor` — a function that extracts raw call target strings from a body node
+   - `import_extractor` — a function that extracts imports as `ImportInfo(local_name, qualified_name)` from a module AST (given the module path and whether the file is a package file like `__init__.py`)
+   - `ref_extractor` — a function that extracts referenced names and dotted chains (calls, callbacks, base classes, ...) from a definition node
 2. **Install the grammar** — add the corresponding `tree-sitter-<language>` package to the `generate` dependency group in `pyproject.toml`.
 3. **Register it** — add an entry in `register_languages()`.
 
@@ -175,7 +181,7 @@ Paste the following prompt into your AI agent of choice (Claude, Codex, Gemini, 
 > - Each inner list is a *row*. Modules in the same row are siblings and must not depend on each other.
 > - Row 0 is the top of the hierarchy (e.g. HTTP handlers, CLI entrypoints). The last row is the bottom (e.g. database, cache, shared utilities).
 > - `submodule_layers` follows the same row structure within a single root module. Only include a module if it has meaningful internal sub-layers; omit it otherwise and it will be treated as a leaf.
-> - Submodule names must be prefixed with their parent module name and a dot (e.g. `payments.gateway`).
+> - Submodule names must be prefixed with their parent module name and a dot (e.g. `payments.gateway`). A module may also list itself as one of its submodules if it contains units directly at the module level.
 >
 > These layers should describe the **desired** dependency hierarchy; our existing codebase might violate these rules, so focus more on how things should be instead of the actual dependencies you find in the code.
 >

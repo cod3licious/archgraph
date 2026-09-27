@@ -1,11 +1,9 @@
-import { showSubmoduleDetail, showUnitDetail, clearDetail, setDetail, escapeHtml } from './detail.js';
+import { showModuleDetail, showSubmoduleDetail, showUnitDetail, clearDetail } from './detail.js';
 import { commonPrefixLen, stripPrefix } from './labels.js';
+import { submoduleRows, dependencyRoles } from './graph-model.js';
+import { svgEl, loadCss } from './dom.js';
 
-// ── Load visualization-specific CSS ──────────────────────────────────────────
-const link = document.createElement('link');
-link.rel = 'stylesheet';
-link.href = 'viz/pearl-graph.css';
-document.head.appendChild(link);
+loadCss('viz/pearl-graph.css');
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const ROW_H = 28;
@@ -24,9 +22,9 @@ export const placeholderHTML = `
     <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="#bab7e0" stroke="#706da6" stroke-width="1"/></svg>
     <span>Pearl: sized by hierarchy level (module > submodule > unit)</span>
     <svg width="18" height="10" viewBox="0 0 18 10"><path d="M2,5 Q9,-3 16,5" fill="none" stroke="#2a7a2a" stroke-width="2"/></svg>
-    <span>Green arc (left): valid dependency (top to bottom)</span>
+    <span>Green arc: valid dependency (points down, drawn on the left)</span>
     <svg width="18" height="10" viewBox="0 0 18 10"><path d="M2,5 Q9,-3 16,5" fill="none" stroke="#b03a2e" stroke-width="2"/></svg>
-    <span>Red arc (right): layer violation (bottom to top)</span>
+    <span>Red arc: layer violation, drawn on the right if it points up, on the left if it points down (e.g., between siblings in the same layer)</span>
   </div>
 
   <h4>Interactions</h4>
@@ -72,7 +70,7 @@ export function render(data) {
     moduleColors[smData.module] = smData.color;
 
   const state = {
-    hierarchy, nodeById, moduleColors, expanded, submodules, units,
+    hierarchy, nodeById, moduleColors, expanded, units,
     treeDiv, canvasDiv, selection: null,
   };
 
@@ -91,6 +89,10 @@ export function render(data) {
 }
 
 // ── Build hierarchy ──────────────────────────────────────────────────────────
+// Node ids are namespaced by level, since a module, one of its submodules, and a
+// unit may share the same path (e.g. a module listed as its own submodule).
+const nodeId = (level, path) => `${level}:${path}`;
+
 function buildHierarchy(layers, submodules, highLevelUnitsFirst) {
   // Pearl graph renders top-to-bottom (high-level at top), so unit lists
   // need to be in high-level-first order. Reverse when data is low-level-first.
@@ -100,39 +102,30 @@ function buildHierarchy(layers, submodules, highLevelUnitsFirst) {
   };
 
   const nodes = [];
-  for (const rootRow of layers.root_layers) {
-    for (const mod of rootRow) {
-      const moduleNode = { id: mod, level: 'module', module: mod, parentId: null, children: [] };
-      nodes.push(moduleNode);
+  const addNode = (level, path, module, parent) => {
+    const node = { id: nodeId(level, path), level, path, module, parentId: parent?.id ?? null, children: [] };
+    parent?.children.push(node);
+    nodes.push(node);
+    return node;
+  };
+  const addUnits = (parent, sm) => {
+    for (const u of graphUnits(sm)) addNode('unit', `${sm}.${u}`, parent.module, parent);
+  };
 
-      const subLayers = layers.submodule_layers?.[mod];
-      if (!subLayers) {
-        // Single-submodule module: attach units directly to the module node
-        for (const u of graphUnits(mod)) {
-          const unitId = `${mod}.${u}`;
-          const unitNode = { id: unitId, level: 'unit', module: mod, parentId: mod, children: [] };
-          moduleNode.children.push(unitNode);
-          nodes.push(unitNode);
-        }
-        continue;
-      }
-      for (const subRow of subLayers) {
-        for (const sm of subRow) {
-          const smNode = { id: sm, level: 'submodule', module: mod, parentId: mod, children: [] };
-          moduleNode.children.push(smNode);
-          nodes.push(smNode);
-
-          for (const u of graphUnits(sm)) {
-            const unitId = `${sm}.${u}`;
-            const unitNode = { id: unitId, level: 'unit', module: mod, parentId: sm, children: [] };
-            smNode.children.push(unitNode);
-            nodes.push(unitNode);
-          }
-        }
-      }
-    }
+  for (const mod of layers.root_layers.flat()) {
+    const moduleNode = addNode('module', mod, mod, null);
+    const sms = submoduleRows(layers, mod).flat();
+    // A module that is its only submodule gets its units attached directly
+    if (sms.length === 1 && sms[0] === mod) addUnits(moduleNode, mod);
+    else for (const sm of sms) addUnits(addNode('submodule', sm, mod, moduleNode), sm);
   }
   return nodes;
+}
+
+function ancestorIds(nodeById, node) {
+  const ids = [];
+  for (let cur = nodeById.get(node.parentId); cur; cur = nodeById.get(cur.parentId)) ids.push(cur.id);
+  return ids;
 }
 
 // ── Visible rows ─────────────────────────────────────────────────────────────
@@ -169,20 +162,17 @@ function collectEdges(rows, nodeById, units) {
   // Map every node to the visible pearl that represents it
   const nodeToVisiblePearl = new Map();
   for (const [id, node] of nodeById) {
-    let cur = node;
-    while (cur) {
-      if (pearlIds.has(cur.id)) { nodeToVisiblePearl.set(id, cur.id); break; }
-      cur = cur.parentId ? nodeById.get(cur.parentId) : null;
-    }
+    const pearlId = [id, ...ancestorIds(nodeById, node)].find(a => pearlIds.has(a));
+    if (pearlId) nodeToVisiblePearl.set(id, pearlId);
   }
 
   // Aggregate unit-level deps to visible pearls
   const edgeMap = new Map();
   for (const [unitId, unitData] of Object.entries(units)) {
-    const fromPearl = nodeToVisiblePearl.get(unitId);
+    const fromPearl = nodeToVisiblePearl.get(nodeId('unit', unitId));
     if (!fromPearl) continue;
     for (const [depId, valid] of Object.entries(unitData.dependencies || {})) {
-      const toPearl = nodeToVisiblePearl.get(depId);
+      const toPearl = nodeToVisiblePearl.get(nodeId('unit', depId));
       if (!toPearl || fromPearl === toPearl) continue;
       const key = `${fromPearl}->${toPearl}`;
       const existing = edgeMap.get(key);
@@ -196,18 +186,19 @@ function collectEdges(rows, nodeById, units) {
 
 // ── Display labels ───────────────────────────────────────────────────────────
 // Modules drop the shared enclosing package (see labels.js); submodules are shown
-// relative to their module; units show only their own name. Full ids stay in tooltips.
+// relative to their module (a module listed as its own submodule keeps the module
+// label); units show only their own name. Full paths stay in tooltips.
 function nodeLabel(node, modPrefixLen) {
-  if (node.level === 'unit') return node.id.split('.').pop();
-  if (node.level === 'submodule') return node.id.slice(node.module.length + 1);
-  return stripPrefix(node.id, modPrefixLen);
+  if (node.level === 'unit') return node.path.split('.').pop();
+  if (node.level === 'submodule' && node.path !== node.module) return node.path.slice(node.module.length + 1);
+  return stripPrefix(node.path, modPrefixLen);
 }
 
 // ── Full re-render ───────────────────────────────────────────────────────────
 function renderAll(state) {
-  const { hierarchy, nodeById, moduleColors, expanded, submodules, units, treeDiv, canvasDiv } = state;
+  const { hierarchy, nodeById, moduleColors, expanded, units, treeDiv, canvasDiv } = state;
   const rows = getVisibleRows(hierarchy, expanded);
-  const modPrefixLen = commonPrefixLen(hierarchy.filter(n => n.level === 'module').map(n => n.id));
+  const modPrefixLen = commonPrefixLen(hierarchy.filter(n => n.level === 'module').map(n => n.path));
   const { edges, pearlRows, pearlVisualIdx } = collectEdges(rows, nodeById, units);
 
   treeDiv.innerHTML = '';
@@ -236,13 +227,8 @@ function renderAll(state) {
         if (expanded.has(node.id)) expanded.delete(node.id);
         else expanded.add(node.id);
         // If selection is inside the toggled subtree, move it to the toggled node
-        if (state.selection && state.selection !== node.id) {
-          let cur = state.nodeById.get(state.selection);
-          while (cur) {
-            if (cur.id === node.id) { state.selection = node.id; break; }
-            cur = cur.parentId ? state.nodeById.get(cur.parentId) : null;
-          }
-        }
+        const selNode = state.nodeById.get(state.selection);
+        if (selNode && ancestorIds(state.nodeById, selNode).includes(node.id)) state.selection = node.id;
         renderAll(state);
       });
     } else {
@@ -269,7 +255,7 @@ function renderAll(state) {
   wrapper.insertBefore(bandContainer, wrapper.firstChild);
 
   for (const mod of hierarchy.filter(n => n.level === 'module')) {
-    const modRowIdxs = rows.map((r, i) => r.node.module === mod.id ? i : -1).filter(i => i >= 0);
+    const modRowIdxs = rows.map((r, i) => r.node.module === mod.path ? i : -1).filter(i => i >= 0);
     if (!modRowIdxs.length) continue;
     const band = document.createElement('div');
     band.className = 'pearl-band';
@@ -304,7 +290,7 @@ function renderAll(state) {
   const pearlCX = arcAreaLeft;
   const svgW = pearlCX + arcAreaRight + 20;
 
-  const svg = createSvgEl('svg');
+  const svg = svgEl('svg');
   svg.setAttribute('width', svgW);
   svg.setAttribute('height', totalH);
   svg.style.cssText = 'position:absolute;top:0;left:0';
@@ -326,7 +312,7 @@ function renderAll(state) {
     const r = node.level === 'module' ? PEARL_R_MODULE
             : node.level === 'submodule' ? PEARL_R_SUBMODULE : PEARL_R_UNIT;
     const color = moduleColors[node.module] || '#999';
-    const circle = createSvgEl('circle');
+    const circle = svgEl('circle');
     circle.setAttribute('cx', pearlCX);
     circle.setAttribute('cy', cy);
     circle.setAttribute('r', r);
@@ -335,8 +321,8 @@ function renderAll(state) {
     circle.setAttribute('stroke-width', '1.5');
     circle.classList.add('pearl-circle');
     circle.style.cursor = 'pointer';
-    const title = createSvgEl('title');
-    title.textContent = node.id;
+    const title = svgEl('title');
+    title.textContent = node.path;
     circle.appendChild(title);
     circle.addEventListener('click', () => toggleSelection(state, node.id));
     svg.appendChild(circle);
@@ -357,7 +343,7 @@ function renderAll(state) {
       const cpx = pearlCX + sign * bulge;
       const color = e.valid ? '#2a7a2a' : '#b03a2e';
 
-      const path = createSvgEl('path');
+      const path = svgEl('path');
       path.setAttribute('d', `M${pearlCX},${y1} C${cpx},${y1} ${cpx},${y2} ${pearlCX},${y2}`);
       path.setAttribute('fill', 'none');
       path.setAttribute('stroke', color);
@@ -405,86 +391,50 @@ function toggleSelection(state, nodeId) {
 }
 
 function applySelection(state) {
-  const { submodules, units, _pearlEls, _arcEls, _rows, _rowEls, _labelEls, _edges } = state;
-  const selId = state.selection;
-  const selNode = state.nodeById.get(selId);
+  const { nodeById, units, _pearlEls, _arcEls, _rows, _rowEls, _labelEls, _edges } = state;
+  const selNode = nodeById.get(state.selection);
   if (!selNode) return;
 
-  // Collect all descendant pearl IDs (for expanded modules/submodules)
-  const selPearlIds = new Set([selId]);
-  const addDescendants = node => {
-    for (const child of node.children) {
-      selPearlIds.add(child.id);
-      addDescendants(child);
-    }
-  };
-  addDescendants(selNode);
+  // The selection includes all descendants (for expanded modules/submodules)
+  const descendants = node => [node, ...node.children.flatMap(descendants)];
+  const selNodes = descendants(selNode);
+  const selIds = new Set(selNodes.map(n => n.id));
 
   // Connected pearls and arcs
-  const connectedPearls = new Set(selPearlIds);
+  const connectedPearls = new Set(selIds);
   const connectedArcs = new Set();
   for (const edge of _edges) {
-    if (selPearlIds.has(edge.from) || selPearlIds.has(edge.to)) {
+    if (selIds.has(edge.from) || selIds.has(edge.to)) {
       connectedPearls.add(edge.from);
       connectedPearls.add(edge.to);
       connectedArcs.add(`${edge.from}->${edge.to}`);
     }
   }
 
-  // Callee/caller sets for label styling
-  const calleeIds = new Set(), callerIds = new Set();
-  if (selNode.level === 'unit') {
-    const ud = units[selId];
-    if (ud) {
-      for (const dep of Object.keys(ud.dependencies || {})) calleeIds.add(dep);
-      for (const [uid, u] of Object.entries(units))
-        if (uid !== selId && u.dependencies?.[selId] !== undefined) callerIds.add(uid);
-    }
-  } else if (selNode.level === 'submodule' || selNode.level === 'module') {
-    // Collect all submodules belonging to this selection
-    const selSubmodules = selNode.level === 'module'
-      ? (selNode.children[0]?.level === 'submodule' ? selNode.children.map(c => c.id) : [selId])
-      : [selId];
-    const selSmSet = new Set(selSubmodules);
-    for (const sm of selSubmodules) {
-      for (const uName of submodules[sm]?.units || []) {
-        for (const dep of Object.keys(units[`${sm}.${uName}`]?.dependencies || {}))
-          if (!selSmSet.has(units[dep]?.submodule)) calleeIds.add(dep);
-      }
-    }
-    for (const [uid, ud] of Object.entries(units)) {
-      if (selSmSet.has(ud.submodule)) continue;
-      for (const dep of Object.keys(ud.dependencies || {}))
-        if (selSmSet.has(units[dep]?.submodule)) { callerIds.add(uid); break; }
-    }
-  }
+  // Expanded module/submodule rows have no pearl, so they stay focused via
+  // the connected pearls (incl. the selection) they contain
+  const withAncestors = ids => new Set([...ids].flatMap(id => {
+    const node = nodeById.get(id);
+    return node ? [id, ...ancestorIds(nodeById, node)] : [];
+  }));
+  const focusedIds = withAncestors(connectedPearls);
 
-  // Roll up callee/caller sets to submodule and module level
-  const calleeParents = new Set(), callerParents = new Set();
-  for (const uid of calleeIds) {
-    const n = state.nodeById.get(uid);
-    if (n) { calleeParents.add(n.parentId); calleeParents.add(n.module); }
-  }
-  for (const uid of callerIds) {
-    const n = state.nodeById.get(uid);
-    if (n) { callerParents.add(n.parentId); callerParents.add(n.module); }
-  }
+  // Callee/caller label styling, rolled up to submodule and module level
+  const { callees, callers } = dependencyRoles(units, selNodes.filter(n => n.level === 'unit').map(n => n.path));
+  const calleeIds = withAncestors([...callees].map(u => nodeId('unit', u)));
+  const callerIds = withAncestors([...callers].map(u => nodeId('unit', u)));
 
   // Highlight rows
   for (const { node } of _rows) {
     const row = _rowEls[node.id], label = _labelEls[node.id];
-    if (!row) continue;
-    const isConnected = connectedPearls.has(node.id) || connectedPearls.has(node.parentId)
-                     || selPearlIds.has(node.id) || selPearlIds.has(node.parentId);
+    const isFocused = focusedIds.has(node.id);
+    row.classList.toggle('dimmed', !isFocused);
+    row.classList.toggle('focused', isFocused);
     label.classList.remove('is-selected', 'is-callee', 'is-caller');
-    if (isConnected) {
-      row.classList.remove('dimmed'); row.classList.add('focused');
-      if (selPearlIds.has(node.id)) label.classList.add('is-selected');
-      else if (calleeIds.has(node.id) || calleeParents.has(node.id)) label.classList.add('is-callee');
-      else if (callerIds.has(node.id) || callerParents.has(node.id)) label.classList.add('is-caller');
-    } else {
-      row.classList.add('dimmed'); row.classList.remove('focused');
-    }
+    if (!isFocused) continue;
+    if (selIds.has(node.id))         label.classList.add('is-selected');
+    else if (calleeIds.has(node.id)) label.classList.add('is-callee');
+    else if (callerIds.has(node.id)) label.classList.add('is-caller');
   }
 
   // Highlight arcs
@@ -497,25 +447,14 @@ function applySelection(state) {
   for (const [id, el] of Object.entries(_pearlEls))
     el.classList.toggle('dimmed', !connectedPearls.has(id));
 
-  // Detail panel
-  if (selNode.level === 'module') {
-    if (selNode.children[0]?.level === 'unit') {
-      // Single-submodule module: show as submodule detail
-      showSubmoduleDetail(selId, submodules[selId], units);
-    } else {
-      const parts = [`<div class="detail-title">${escapeHtml(selId)}</div>`];
-      for (const sm of selNode.children) {
-        parts.push(`<h3>${escapeHtml(sm.id)}</h3>`);
-        const smUnits = submodules[sm.id]?.units || [];
-        parts.push(`<p>${smUnits.map(escapeHtml).join(', ') || 'no units'}</p>`);
-      }
-      setDetail(parts.join(''));
-    }
-  } else if (selNode.level === 'submodule') {
-    showSubmoduleDetail(selId, submodules[selId], units);
-  } else if (selNode.level === 'unit') {
-    showUnitDetail(selId, units[selId]);
-  }
+  // Detail panel (units in tree order)
+  const unitPaths = node => node.children.map(c => c.path);
+  if (selNode.level === 'unit')
+    showUnitDetail(selNode.path, units[selNode.path]);
+  else if (selNode.children[0]?.level === 'submodule')
+    showModuleDetail(selNode.path, selNode.children.map(sm => [sm.path, unitPaths(sm)]), units);
+  else
+    showSubmoduleDetail(selNode.path, unitPaths(selNode), units);
 }
 
 function clearHighlights(state) {
@@ -530,10 +469,6 @@ function clearHighlights(state) {
 }
 
 // ── Utilities ────────────────────────────────────────────────────────────────
-function createSvgEl(tag) {
-  return document.createElementNS('http://www.w3.org/2000/svg', tag);
-}
-
 function darken(hex) {
   const m = hex.match(/^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i);
   if (!m) return '#666';

@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import heapq
 import json
 import logging
+import re
+from collections import Counter
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
 import tree_sitter as ts
 
-from languages import LANGUAGE_CONFIGS, ImportInfo, LanguageConfig, _text, register_languages
+from languages import LANGUAGE_CONFIGS, ImportInfo, LanguageConfig, node_text, register_languages
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +31,8 @@ class UnitInfo:
     name: str  # "charge"
     kind: str  # "function" | "class"
     docstring: str | None = None
-    raw_calls: list[str] = field(default_factory=list)
+    raw_refs: list[str] = field(default_factory=list)  # names / dotted chains referenced in the unit
+    is_private: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -80,44 +85,21 @@ def package_prefix(root: Path, config: LanguageConfig) -> tuple[str, ...]:
 # ---------------------------------------------------------------------------
 
 
-def _def_name_kind(child: ts.Node, config: LanguageConfig) -> tuple[str, str] | None:
-    """Return (name, kind) for a top-level function/class node, or None if it isn't one."""
-    if child.type in config.function_node_types:
-        name_node = child.child_by_field_name(config.function_name_field)
+def _def_name_kind(definition: ts.Node | None, config: LanguageConfig) -> tuple[str, str] | None:
+    """Return (name, kind) for a function/class definition node, or None if it isn't one."""
+    if definition is None:
+        return None
+    if definition.type in config.function_node_types:
+        name_node = definition.child_by_field_name(config.function_name_field)
         kind = "function"
-    elif child.type in config.class_node_types:
-        name_node = child.child_by_field_name(config.class_name_field)
+    elif definition.type in config.class_node_types:
+        name_node = definition.child_by_field_name(config.class_name_field)
         kind = "class"
     else:
         return None
     if name_node is None:
         return None
-    return _text(name_node), kind
-
-
-def _expand_private_calls(calls: list[str], helper_calls: dict[str, list[str]]) -> list[str]:
-    """Inline calls to same-module private helpers so their dependencies aren't lost.
-
-    Private helpers aren't emitted as units, so a public unit that delegates to
-    them would otherwise drop the helpers' outgoing dependencies. Recursively
-    replace each call to a private helper with the helper's own calls (a `seen`
-    set guards against recursion cycles).
-    """
-    expanded: list[str] = []
-    seen: set[str] = set()
-
-    def visit(cs: list[str]) -> None:
-        for call in cs:
-            if call in helper_calls:
-                if call in seen:
-                    continue
-                seen.add(call)
-                visit(helper_calls[call])
-            else:
-                expanded.append(call)
-
-    visit(calls)
-    return expanded
+    return node_text(name_node), kind
 
 
 def parse_file(
@@ -126,47 +108,36 @@ def parse_file(
     config: LanguageConfig,
     parser: ts.Parser,
     *,
-    include_private: bool = False,
+    is_package: bool = False,
 ) -> tuple[list[UnitInfo], list[ImportInfo]]:
-    """Parse a single source file into units and imports.
+    """Parse a single source file into units (public and private) and imports.
 
-    Extracts top-level functions and classes. Class methods are folded into
-    the class unit (their calls become the class's raw_calls).
-
-    When private symbols are excluded (the default), their outgoing calls are
-    still inlined into the public units that call them, so dependencies routed
-    through private helpers are preserved as edges of the public callers.
+    Extracts top-level functions and classes (including decorated ones). Class
+    methods are folded into the class unit (their refs become the class's raw_refs),
+    and refs in decorators count as refs of the decorated unit.
+    `is_package` marks package files (e.g. __init__.py), whose module path is the
+    package itself, which matters for resolving relative imports.
     """
-    tree = parser.parse(source)
-    root = tree.root_node
-
-    imports = config.import_extractor(root, module_path)
-    defs = [(nk[0], nk[1], child) for child in root.children if (nk := _def_name_kind(child, config)) is not None]
-
-    # Map of private helper name -> its raw calls, used to inline edges into public callers.
-    helper_calls: dict[str, list[str]] = {}
-    if not include_private:
-        helper_calls = {name: config.call_extractor(child) for name, _kind, child in defs if config.is_private(name, child)}
-
+    root = parser.parse(source).root_node
     units: list[UnitInfo] = []
-    for name, kind, child in defs:
-        if not include_private and config.is_private(name, child):
+    for child in root.children:
+        definition = config.unwrap_definition(child)
+        name_kind = _def_name_kind(definition, config)
+        if definition is None or name_kind is None:
             continue
-        calls = config.call_extractor(child)
-        if not include_private:
-            calls = _expand_private_calls(calls, helper_calls)
+        name, kind = name_kind
         units.append(
             UnitInfo(
                 qualified_name=f"{module_path}.{name}",
                 submodule=module_path,
                 name=name,
                 kind=kind,
-                docstring=config.docstring_extractor(child),
-                raw_calls=calls,
+                docstring=config.docstring_extractor(definition),
+                raw_refs=config.ref_extractor(child),
+                is_private=config.is_private(name, definition),
             )
         )
-
-    return units, imports
+    return units, config.import_extractor(root, module_path, is_package)
 
 
 # ---------------------------------------------------------------------------
@@ -179,25 +150,28 @@ def build_index(
     *,
     exclude_patterns: list[str] | None = None,
     include_private: bool = False,
-) -> tuple[dict[str, UnitInfo], dict[str, dict[str, str]]]:
-    """Walk source files under root, parse each, return symbol index and import map.
+) -> tuple[dict[str, UnitInfo], dict[str, dict[str, str]], dict[str, UnitInfo]]:
+    """Walk source files under root, parse each, return symbol index, import map and private helpers.
 
-    symbol_index: qualified_name -> UnitInfo
+    symbol_index: qualified_name -> UnitInfo (the units to emit)
     import_map: module_path -> {local_name -> qualified_name}
+    helpers: qualified_name -> UnitInfo of private units that are not emitted
+        (unless include_private); resolve_dependencies inlines their refs into callers.
+
+    Units whose path equals a submodule path (e.g. `main` in `run/__init__.py` next to
+    `run/main.py`) are skipped with a warning, since prepare.py rejects them.
     """
     exclude = exclude_patterns or []
     symbol_index: dict[str, UnitInfo] = {}
     import_map: dict[str, dict[str, str]] = {}
+    helpers: dict[str, UnitInfo] = {}
 
-    # Build extension -> (language_fn, config) lookup
-    ext_configs: dict[str, tuple] = {}
     for ext, (lang_fn, config) in LANGUAGE_CONFIGS.items():
-        ext_configs[ext] = (lang_fn, config)
-
-    for ext, (lang_fn, config) in ext_configs.items():
-        lang = ts.Language(lang_fn())
-        parser = ts.Parser(lang)
+        parser = ts.Parser(ts.Language(lang_fn()))
         prefix = package_prefix(root, config)
+        # A root without package marker may still be imported by its name (namespace package),
+        # unless it contains a same-named module, in which case such imports refer to that one.
+        namespace = "" if prefix or any(p.stem == root.name for p in root.iterdir()) else f"{root.name}."
 
         for path in sorted(root.rglob(f"*.{ext}")):
             if any(fnmatch(path.name, pat) for pat in exclude):
@@ -206,17 +180,22 @@ def build_index(
             if module_path is None:
                 continue
 
-            source = path.read_bytes()
-            units, imports = parse_file(source, module_path, config, parser, include_private=include_private)
+            is_package = path.stem in config.package_filenames
+            units, imports = parse_file(path.read_bytes(), module_path, config, parser, is_package=is_package)
 
             for unit in units:
-                if unit.qualified_name in symbol_index:
+                index = helpers if unit.is_private and not include_private else symbol_index
+                if unit.qualified_name in index:
                     logger.warning(f"Duplicate unit: {unit.qualified_name}")
-                symbol_index[unit.qualified_name] = unit
+                index[unit.qualified_name] = unit
 
-            import_map[module_path] = {imp.local_name: imp.qualified_name for imp in imports}
+            import_map[module_path] = {imp.local_name: imp.qualified_name.removeprefix(namespace) for imp in imports}
 
-    return symbol_index, import_map
+    for qname in sorted({unit.submodule for unit in symbol_index.values()} & symbol_index.keys()):
+        logger.warning(f"Skipping {qname}: unit path collides with the submodule of the same name")
+        del symbol_index[qname]
+
+    return symbol_index, import_map, helpers
 
 
 # ---------------------------------------------------------------------------
@@ -224,64 +203,105 @@ def build_index(
 # ---------------------------------------------------------------------------
 
 
+def _qualify_ref(ref: str, local_imports: dict[str, str], module_path: str) -> str:
+    """Turn a raw ref into a fully qualified path via the import map, else as a same-module name."""
+    first, _, rest = ref.partition(".")
+    if first in local_imports:
+        base = local_imports[first]
+        return f"{base}.{rest}" if rest else base
+    return f"{module_path}.{ref}"
+
+
+def _find_in_index(qualified: str, units: dict[str, UnitInfo], modules: dict[str, dict[str, str]]) -> str | None:
+    """Find the unit a qualified path points to.
+
+    Strips trailing segments (e.g. `Model.Manager.create` -> `Model`) but never past a
+    module path, so a ref into a module never resolves to a unit named like that module.
+    """
+    parts = qualified.split(".")
+    for end in range(len(parts), 0, -1):
+        candidate = ".".join(parts[:end])
+        if candidate in units:
+            return candidate
+        if candidate in modules:
+            return None
+    return None
+
+
+def _follow_reexport(qualified: str, import_map: dict[str, dict[str, str]]) -> str | None:
+    """Rewrite `module.name.rest` to the path `name` was imported from in `module` (e.g. a package __init__)."""
+    parts = qualified.split(".")
+    for i in range(len(parts) - 1, 0, -1):
+        module = ".".join(parts[:i])
+        if module in import_map:
+            target = import_map[module].get(parts[i])
+            return ".".join([target, *parts[i + 1 :]]) if target else None
+    return None
+
+
+def _resolve_target(qualified: str, units: dict[str, UnitInfo], import_map: dict[str, dict[str, str]]) -> str | None:
+    """Find the unit a qualified path refers to, following re-exports (a `seen` set guards against import cycles)."""
+    seen: set[str] = set()
+    current: str | None = qualified
+    while current is not None and current not in seen:
+        seen.add(current)
+        if (found := _find_in_index(current, units, import_map)) is not None:
+            return found
+        current = _follow_reexport(current, import_map)
+    return None
+
+
 def resolve_dependencies(
     symbol_index: dict[str, UnitInfo],
     import_map: dict[str, dict[str, str]],
+    helpers: dict[str, UnitInfo] | None = None,
 ) -> dict[str, list[str]]:
-    """Resolve raw calls to qualified unit paths that exist in symbol_index.
+    """Resolve raw refs to qualified unit paths that exist in symbol_index.
+
+    Private helpers aren't emitted as units, so a unit that delegates to them would
+    otherwise drop the helpers' outgoing dependencies. A ref to a helper is therefore
+    replaced by the helper's own resolved refs, recursively (a `seen` set guards
+    against recursion cycles).
 
     Returns: {unit_qualified_name: [dependency_qualified_name, ...]}
     """
-    result: dict[str, list[str]] = {}
+    helpers = helpers or {}
+    units = symbol_index | helpers
 
-    for qname, unit in symbol_index.items():
+    def resolve(unit: UnitInfo, seen: set[str]) -> Iterator[str]:
         local_imports = import_map.get(unit.submodule, {})
-        deps: dict[str, bool] = {}  # use dict for dedup, preserving order
-
-        for call in unit.raw_calls:
-            resolved = _resolve_call(call, local_imports, unit.submodule)
-            if resolved is None:
+        for ref in unit.raw_refs:
+            target = _resolve_target(_qualify_ref(ref, local_imports, unit.submodule), units, import_map)
+            if target is None:
                 continue
-            # Try exact match, then strip last segment (method -> class)
-            target = _find_in_index(resolved, symbol_index)
-            if target is not None and target != qname:  # skip self-deps
-                deps[target] = True
+            if target not in helpers:
+                yield target
+            elif target not in seen:
+                seen.add(target)
+                yield from resolve(helpers[target], seen)
 
-        result[qname] = list(deps)
-
-    return result
-
-
-def _resolve_call(call: str, local_imports: dict[str, str], module_path: str) -> str | None:
-    """Resolve a raw call string through the import map or same-module lookup."""
-    parts = call.split(".")
-    first = parts[0]
-    if first in local_imports:
-        base = local_imports[first]
-        if len(parts) > 1:
-            return base + "." + ".".join(parts[1:])
-        return base
-    # Try as a same-module reference (e.g. calling another function in the same file)
-    if len(parts) == 1:
-        return f"{module_path}.{first}"
-    return None
-
-
-def _find_in_index(qualified: str, symbol_index: dict[str, UnitInfo]) -> str | None:
-    """Find a unit in the index, trying exact match then stripping segments."""
-    if qualified in symbol_index:
-        return qualified
-    # Try stripping last segment (e.g. Class.method -> Class)
-    if "." in qualified:
-        parent = qualified.rsplit(".", 1)[0]
-        if parent in symbol_index:
-            return parent
-    return None
+    return {
+        qname: [dep for dep in dict.fromkeys(resolve(unit, set())) if dep != qname]  # skip self-deps
+        for qname, unit in symbol_index.items()
+    }
 
 
 # ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
+
+
+_MARKUP_LINE_RE = re.compile(r"^( {0,3})(###(?=[ \t]|$)|```|~~~)", re.MULTILINE)
+
+
+def _description(unit: UnitInfo, full_docstrings: bool) -> str:
+    """Unit description from its docstring (first paragraph unless full_docstrings), escaped for units.md."""
+    if not unit.docstring:
+        return f"{unit.kind.capitalize()} in {unit.submodule}."
+    doc = unit.docstring if full_docstrings else " ".join(re.split(r"\n\s*\n", unit.docstring)[0].split())
+    # Backslash-escape what prepare.py would parse as a unit heading, code fence (which could
+    # swallow the following headings if unclosed) or dependency ref
+    return _MARKUP_LINE_RE.sub(r"\1\\\2", doc).replace("`@", "`\\@")
 
 
 def format_units_md(
@@ -301,8 +321,7 @@ def format_units_md(
         units = by_submodule[sm]
         for unit in units:
             lines.append(f"### {unit.qualified_name}")
-            docstring = unit.docstring if full_docstrings else unit.docstring.split("\n")[0] if unit.docstring else None
-            desc = docstring or f"{unit.kind.capitalize()} in {unit.submodule}."
+            desc = _description(unit, full_docstrings)
             deps = dependencies.get(unit.qualified_name, [])
             if deps:
                 dep_refs = ", ".join(f"`@{d}`" for d in sorted(deps))
@@ -316,7 +335,7 @@ def format_units_md(
 def _aggregate_deps_by(
     symbol_index: dict[str, UnitInfo],
     dependencies: dict[str, list[str]],
-    key_fn,
+    key_fn: Callable[[UnitInfo], str],
 ) -> dict[str, set[str]]:
     """Aggregate unit-level dependencies to a coarser grouping defined by key_fn.
 
@@ -335,51 +354,76 @@ def _aggregate_deps_by(
     return graph
 
 
+def _strongly_connected_components(nodes: list[str], edges: dict[str, set[str]]) -> list[list[str]]:
+    """Tarjan's algorithm; returns the SCCs of the graph restricted to nodes."""
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    sccs: list[list[str]] = []
+
+    def visit(v: str) -> None:
+        index[v] = low[v] = len(index)
+        stack.append(v)
+        on_stack.add(v)
+        for w in sorted(edges[v]):
+            if w not in index:
+                visit(w)
+                low[v] = min(low[v], low[w])
+            elif w in on_stack:
+                low[v] = min(low[v], index[w])
+        if low[v] == index[v]:
+            scc: list[str] = []
+            while not scc or scc[-1] != v:
+                scc.append(stack.pop())
+                on_stack.discard(scc[-1])
+            sccs.append(scc)
+
+    for v in sorted(nodes):
+        if v not in index:
+            visit(v)
+    return sccs
+
+
+def _net_flow_sorted(scc: list[str], edges: dict[str, set[str]]) -> list[str]:
+    """Order the nodes of a cycle: most outgoing minus incoming edges (within the cycle) first."""
+    members = set(scc)
+    out_deg = {i: len(edges[i] & members) for i in scc}
+    in_deg = Counter(t for i in scc for t in edges[i] & members)
+    return sorted(scc, key=lambda i: (-(out_deg[i] - in_deg[i]), -in_deg[i], i))
+
+
 def _dep_sorted(items: list[str], dep_graph: dict[str, set[str]]) -> list[str]:
     """Sort items by dependency flow: consumers at top, providers at bottom.
 
-    Uses Kahn's topological sort (alphabetical tiebreak) for a perfect ordering
-    when the graph is a DAG. Nodes involved in cycles fall back to a net-flow
-    heuristic. Isolated nodes (no edges at all) are placed at the very bottom.
+    Cycles are condensed into strongly connected components, which are then
+    topologically sorted with Kahn's algorithm (alphabetical tiebreak), so providers
+    always end up below their consumers. Nodes within a cycle are ordered by a
+    net-flow heuristic. Isolated nodes (no edges at all) are placed at the very bottom.
     """
     item_set = set(items)
     edges = {i: dep_graph.get(i, set()) & item_set for i in items}
-    in_deg = dict.fromkeys(items, 0)
-    for targets in edges.values():
-        for t in targets:
-            in_deg[t] += 1
+    has_incoming = {t for targets in edges.values() for t in targets}
+    isolated = sorted(i for i in items if not edges[i] and i not in has_incoming)
+    connected = [i for i in items if edges[i] or i in has_incoming]
 
-    # Separate isolated nodes (no connections) — they go to the bottom
-    connected = [i for i in items if edges[i] or in_deg[i] > 0]
-    isolated = sorted(i for i in items if not edges[i] and in_deg[i] == 0)
+    sccs = _strongly_connected_components(connected, edges)
+    component = {node: k for k, scc in enumerate(sccs) for node in scc}
+    comp_edges = [{component[t] for node in scc for t in edges[node]} - {k} for k, scc in enumerate(sccs)]
+    in_deg = Counter(t for targets in comp_edges for t in targets)
 
-    # Kahn's algorithm on connected nodes
-    queue = sorted(i for i in connected if in_deg[i] == 0)
+    heap = [(min(scc), k) for k, scc in enumerate(sccs) if in_deg[k] == 0]
+    heapq.heapify(heap)
     result: list[str] = []
-    while queue:
-        node = queue.pop(0)
-        result.append(node)
-        for t in sorted(edges[node]):
+    while heap:
+        _, k = heapq.heappop(heap)
+        result.extend(_net_flow_sorted(sccs[k], edges))
+        for t in comp_edges[k]:
             in_deg[t] -= 1
             if in_deg[t] == 0:
-                queue.append(t)
-                queue.sort()
+                heapq.heappush(heap, (min(sccs[t]), t))
 
-    # Remaining connected nodes are in cycles — rank by net flow
-    if len(result) < len(connected):
-        placed = set(result)
-        rest = [i for i in connected if i not in placed]
-        out_deg = {i: len(edges[i] - placed) for i in rest}
-        rest_in = dict.fromkeys(rest, 0)
-        rest_set = set(rest)
-        for i in rest:
-            for t in edges[i] & rest_set:
-                rest_in[t] += 1
-        rest.sort(key=lambda i: (-(out_deg[i] - rest_in[i]), -rest_in[i], i))
-        result.extend(rest)
-
-    result.extend(isolated)
-    return result
+    return result + isolated
 
 
 def _root_module_depth(submodules: set[str]) -> int:
@@ -407,15 +451,13 @@ def _root_module_depth(submodules: set[str]) -> int:
 def generate_layers_draft(
     symbol_index: dict[str, UnitInfo],
     dependencies: dict[str, list[str]],
-) -> tuple[dict, set[str]]:
-    """Generate a draft layers.json ordered by dependency flow.
-
-    Returns (layers_dict, valid_submodules). The valid_submodules set contains
-    exactly the submodules that appear in the flattened layers — use it to filter
-    units.md so both files stay consistent.
+) -> dict:
+    """Generate a draft layers.json ordered by dependency flow, covering every unit's submodule.
 
     Each module and submodule gets its own row. The user is expected to reorder
     rows and merge siblings to express the intended dependency hierarchy.
+    A root module with both its own units (e.g. from __init__.py) and nested
+    submodules lists itself as one of its submodules.
     """
     submodules: set[str] = {unit.submodule for unit in symbol_index.values()}
     depth = _root_module_depth(submodules)
@@ -431,38 +473,15 @@ def generate_layers_draft(
 
     root_layers = [[m] for m in _dep_sorted(list(root_modules), root_deps)]
 
-    # Only add submodule_layers for root modules that have actual submodules.
-    # If units exist directly at the root level (e.g. from __init__.py), the module
-    # must stay a leaf — prepare.py doesn't support mixing root-level units with
-    # submodule_layers.
+    # Root modules without nested submodules stay leaves (not in submodule_layers)
     submodule_layers: dict[str, list[list[str]]] = {}
-    valid_submodules: set[str] = set()
     for root in sorted(root_modules):
-        has_root_units = root in submodules
         nested = [sm for sm in submodules if sm.startswith(root + ".")]
-        if nested and not has_root_units:
-            submodule_layers[root] = [[sm] for sm in _dep_sorted(nested, sm_deps)]
-            valid_submodules.update(nested)
-        else:
-            # Leaf module: only the root name is a valid submodule
-            valid_submodules.add(root)
+        if nested:
+            own = [root] if root in submodules else []
+            submodule_layers[root] = [[sm] for sm in _dep_sorted(own + nested, sm_deps)]
 
-    layers = {"root_layers": root_layers, "submodule_layers": submodule_layers}
-    return layers, valid_submodules
-
-
-def filter_to_valid_submodules(
-    symbol_index: dict[str, UnitInfo],
-    valid_submodules: set[str],
-) -> dict[str, UnitInfo]:
-    """Remove units whose submodule is not in the valid set."""
-    filtered: dict[str, UnitInfo] = {}
-    for qname, unit in symbol_index.items():
-        if unit.submodule in valid_submodules:
-            filtered[qname] = unit
-        else:
-            logger.warning(f"Dropping {qname}: submodule {unit.submodule} not in layers")
-    return filtered
+    return {"root_layers": root_layers, "submodule_layers": submodule_layers}
 
 
 # ---------------------------------------------------------------------------
@@ -492,20 +511,15 @@ if __name__ == "__main__":
 
     exclude_patterns = [p.strip() for p in args.exclude.split(",") if p.strip()]
 
-    symbol_index, import_map = build_index(
+    symbol_index, import_map, helpers = build_index(
         args.root.resolve(),
         exclude_patterns=exclude_patterns,
         include_private=args.include_private,
     )
     logger.info(f"Found {len(symbol_index)} units across {len(import_map)} modules")
 
-    # Resolve deps on full index, then use them to order the draft
-    deps = resolve_dependencies(symbol_index, import_map)
-    draft, valid_submodules = generate_layers_draft(symbol_index, deps)
-    symbol_index = filter_to_valid_submodules(symbol_index, valid_submodules)
-
-    # Re-resolve after filtering so units.md only references valid submodules
-    deps = resolve_dependencies(symbol_index, import_map)
+    deps = resolve_dependencies(symbol_index, import_map, helpers)
+    draft = generate_layers_draft(symbol_index, deps)
 
     args.output.mkdir(parents=True, exist_ok=True)
 

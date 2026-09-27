@@ -30,14 +30,22 @@ export function clearDetail() {
   document.getElementById('detail-content').style.display = 'none';
 }
 
-export function showSubmoduleDetail(sm, smData, units) {
-  const unitNames = smData?.units || [];
-  const parts = [`<div class="detail-title">${escapeHtml(sm)}</div>`];
-  for (const name of unitNames) {
-    const u = units[`${sm}.${name}`];
-    if (u) parts.push(`<h3>${escapeHtml(name)}</h3>` + renderMarkdown(u.description || ''));
-  }
-  setDetail(parts.join(''));
+export function showSubmoduleDetail(sm, unitPaths, units) {
+  setDetail(
+    `<div class="detail-title">${escapeHtml(sm)}</div>` +
+    unitPaths.filter(p => units[p])
+      .map(p => `<h3>${escapeHtml(units[p].name)}</h3>` + renderMarkdown(units[p].description || '')).join('')
+  );
+}
+
+// submoduleUnitPaths: [[submodule, unitPaths], ...]
+export function showModuleDetail(mod, submoduleUnitPaths, units) {
+  setDetail(
+    `<div class="detail-title">${escapeHtml(mod)}</div>` +
+    submoduleUnitPaths.map(([sm, unitPaths]) =>
+      `<h3>${escapeHtml(sm)}</h3><p>${unitPaths.map(p => escapeHtml(units[p]?.name ?? p)).join(', ') || 'no units'}</p>`
+    ).join('')
+  );
 }
 
 export function showUnitDetail(unitPath, unitData) {

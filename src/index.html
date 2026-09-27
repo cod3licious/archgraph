@@ -208,8 +208,7 @@ function switchView(view) {
   const graphPane = document.getElementById('graph-pane');
   if (graphPane._viewCleanup) { graphPane._viewCleanup(); graphPane._viewCleanup = null; }
 
-  // Re-render graph
-  document.getElementById('graph-container').innerHTML = '';
+  // Re-render graph (each view resets the container itself, so a load error stays visible)
   if (resultData) views[view].render(resultData);
 }
 

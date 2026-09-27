@@ -1,13 +1,14 @@
 """Language-specific tree-sitter configurations for unit extraction.
 
 Each language provides a LanguageConfig that tells the generic extraction logic
-how to find functions, classes, docstrings, imports, and call sites in the AST.
+how to find functions, classes, docstrings, imports, and references in the AST.
 Only Python is fully implemented; others are extension points for the future.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import inspect
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -15,10 +16,19 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
 
-def _text(node: Node) -> str:
+def node_text(node: Node) -> str:
     """Decode node text, asserting it is not None (always true for parsed nodes)."""
     assert node.text is not None
     return node.text.decode()
+
+
+def _walk(node: Node) -> Iterator[Node]:
+    """Yield node and all its descendants in source order (iterative, so deep trees can't hit the recursion limit)."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(reversed(current.children))
 
 
 @dataclass
@@ -41,10 +51,12 @@ class LanguageConfig:
     function_name_field: str
     class_node_types: frozenset[str]
     class_name_field: str
+    # Top-level node -> the definition it wraps (e.g. a decorated function), or the node itself
+    unwrap_definition: Callable[[Node], Node | None]
     is_private: Callable[[str, Node], bool]  # (name, definition_node) -> is private?
     docstring_extractor: Callable[[Node], str | None]
-    import_extractor: Callable[[Node, str], list[ImportInfo]]
-    call_extractor: Callable[[Node], list[str]]  # extract raw call names from a definition node
+    import_extractor: Callable[[Node, str, bool], list[ImportInfo]]  # (module root, module_path, is_package)
+    ref_extractor: Callable[[Node], list[str]]  # names / dotted chains referenced in a definition node
 
 
 # Populated at runtime by register_languages()
@@ -54,6 +66,14 @@ LANGUAGE_CONFIGS: dict[str, tuple[Callable, LanguageConfig]] = {}
 # ---------------------------------------------------------------------------
 # Python
 # ---------------------------------------------------------------------------
+
+
+def _python_unwrap_definition(node: Node) -> Node | None:
+    """Return the definition wrapped by decorators; None for `@overload` stubs (only the implementation is a unit)."""
+    if node.type != "decorated_definition":
+        return node
+    decorators = {node_text(d).removeprefix("@").strip() for d in node.children if d.type == "decorator"}
+    return None if decorators & {"overload", "typing.overload"} else node.child_by_field_name("definition")
 
 
 def _python_extract_docstring(node: Node) -> str | None:
@@ -66,87 +86,138 @@ def _python_extract_docstring(node: Node) -> str | None:
         return None
     expr = first.children[0]
     if expr.type == "string":
-        raw = _text(expr)
-        # Strip triple quotes or single quotes
+        raw = node_text(expr).lstrip("rRuUbBfF")
         for q in ('"""', "'''", '"', "'"):
             if raw.startswith(q) and raw.endswith(q):
-                return raw[len(q) : -len(q)].strip()
+                return inspect.cleandoc(raw[len(q) : -len(q)])
     return None
 
 
-def _python_extract_imports(node: Node, module_path: str) -> list[ImportInfo]:
-    """Extract imports from a module-level AST node."""
-    results: list[ImportInfo] = []
-    for child in node.children:
-        if child.type == "import_statement":
-            # `import foo.bar` -> local_name="foo", qualified="foo"
-            # (also "foo.bar" -> "foo.bar")
-            for name_node in child.children:
-                if name_node.type == "dotted_name":
-                    full = _text(name_node)
-                    results.append(ImportInfo(local_name=full.split(".")[0], qualified_name=full))
-        elif child.type == "import_from_statement":
-            _python_parse_from_import(child, module_path, results)
-    return results
-
-
-def _python_parse_from_import(node: Node, module_path: str, results: list[ImportInfo]) -> None:
-    source_module = ""
-    imported_names: list[str] = []
-    is_star = False
-
-    for child in node.children:
-        if child.type == "dotted_name" and not source_module:
-            source_module = _text(child)
-        elif child.type == "relative_import":
-            source_module = _resolve_relative_import(child, module_path)
-        elif child.type == "dotted_name" and source_module:
-            imported_names.append(_text(child))
-        elif child.type == "wildcard_import":
-            is_star = True
-
-    if is_star or not source_module:
-        return
-
-    for name in imported_names:
-        results.append(ImportInfo(local_name=name, qualified_name=f"{source_module}.{name}"))
-
-
-def _resolve_relative_import(node: Node, module_path: str) -> str:
+def _resolve_relative_import(node: Node, module_path: str, is_package: bool) -> str:
     """Resolve a relative import node to an absolute module path."""
     dots = 0
     suffix = ""
     for child in node.children:
         if child.type == "import_prefix":
-            dots = len(_text(child))
+            dots = len(node_text(child))
         elif child.type == "dotted_name":
-            suffix = _text(child)
+            suffix = node_text(child)
 
     parts = module_path.split(".")
-    # Go up `dots` levels (1 dot = parent package, 2 dots = grandparent, etc.)
-    base_parts = parts[:-dots] if dots <= len(parts) else []
+    # 1 dot = the containing package; a package file's (__init__.py) module path already is that package
+    levels_up = dots - 1 if is_package else dots
+    base_parts = parts[: max(len(parts) - levels_up, 0)]
     if suffix:
         base_parts.append(suffix)
     return ".".join(base_parts)
 
 
-def _python_extract_calls(node: Node) -> list[str]:
-    """Extract raw call target names from a definition node (function or class)."""
-    calls: list[str] = []
-    _walk_calls(node, calls)
-    return calls
+def _python_import_info(name_node: Node, source_module: str | None) -> ImportInfo:
+    """Map an imported name (dotted_name or aliased_import) to its local and qualified name.
+
+    source_module is None for plain `import` statements, where `import a.b.c` binds
+    `a` (so `a.b.c.f()` resolves to `a.b.c.f`).
+    """
+    alias = name_node.child_by_field_name("alias")
+    target = node_text(name_node.child_by_field_name("name") or name_node)
+    if alias is not None:
+        local_name = node_text(alias)
+    elif source_module is None:
+        local_name = target = target.split(".")[0]
+    else:
+        local_name = target
+    qualified_name = f"{source_module}.{target}" if source_module else target
+    return ImportInfo(local_name=local_name, qualified_name=qualified_name)
 
 
-def _walk_calls(node: Node, calls: list[str]) -> None:
-    if node.type == "call":
-        fn = node.child_by_field_name("function")
-        if fn is not None:
-            text = _text(fn)
-            # Skip self.x() and cls.x() calls (intra-unit)
-            if not text.startswith(("self.", "cls.")):
-                calls.append(text)
-    for child in node.children:
-        _walk_calls(child, calls)
+def _python_extract_imports(node: Node, module_path: str, is_package: bool) -> list[ImportInfo]:
+    """Extract imports from anywhere in a module AST.
+
+    Imports nested in functions, try/except or `if TYPE_CHECKING:` blocks are treated
+    as module-wide, so different scopes importing different things under the same
+    local name may resolve to the wrong one (the last import wins).
+    """
+    results: list[ImportInfo] = []
+    for child in _walk(node):
+        if child.type == "import_statement":
+            results.extend(_python_import_info(name, None) for name in child.children_by_field_name("name"))
+        elif child.type == "import_from_statement" and (module_node := child.child_by_field_name("module_name")):
+            source = (
+                _resolve_relative_import(module_node, module_path, is_package)
+                if module_node.type == "relative_import"
+                else node_text(module_node)
+            )
+            # wildcard imports have no "name" children and are skipped
+            results.extend(_python_import_info(name, source) for name in child.children_by_field_name("name"))
+    return results
+
+
+# Identifiers directly inside these nodes bind a local name
+_PY_PATTERN_TYPES = frozenset(
+    {
+        "parameters",
+        "lambda_parameters",
+        "typed_parameter",
+        "list_splat_pattern",
+        "dictionary_splat_pattern",
+        "pattern_list",
+        "tuple_pattern",
+        "list_pattern",
+        "as_pattern_target",
+    }
+)
+# Node type -> field whose identifier binds a local name
+_PY_BINDING_FIELDS = {
+    "assignment": "left",
+    "augmented_assignment": "left",
+    "for_statement": "left",
+    "for_in_clause": "left",
+    "named_expression": "name",
+    "default_parameter": "name",
+    "typed_default_parameter": "name",
+}
+# Identifiers/attributes under these parents are not references on their own
+# (attribute: part of a longer chain or the member name; the others: import statements)
+_PY_NON_REF_PARENTS = frozenset({"attribute", "dotted_name", "aliased_import"})
+
+
+def _python_is_binding(node: Node) -> bool:
+    parent = node.parent
+    if parent is None:
+        return False
+    field = _PY_BINDING_FIELDS.get(parent.type)
+    return parent.type in _PY_PATTERN_TYPES or (field is not None and parent.child_by_field_name(field) == node)
+
+
+def _is_dotted_chain(node: Node | None) -> bool:
+    """True for an identifier or an attribute chain of identifiers (e.g. `a.b.c`, not `a().b`)."""
+    while node is not None and node.type == "attribute":
+        node = node.child_by_field_name("object")
+    return node is not None and node.type == "identifier"
+
+
+def _python_is_ref(node: Node) -> bool:
+    parent = node.parent
+    return (
+        node.type in ("identifier", "attribute")
+        and parent is not None
+        and parent.type not in _PY_NON_REF_PARENTS
+        and parent.child_by_field_name("name") != node  # def/class/keyword-argument names
+        and _is_dotted_chain(node)
+    )
+
+
+def _python_extract_refs(node: Node) -> list[str]:
+    """Extract referenced names and dotted chains from a definition node.
+
+    Covers calls, callbacks passed as arguments, decorators, base classes and type
+    annotations. Names bound locally anywhere in the definition (parameters,
+    assignment/loop/`as` targets) are skipped, since they shadow module-level names.
+    """
+    nodes = list(_walk(node))
+    bound = {node_text(n) for n in nodes if n.type == "identifier" and _python_is_binding(n)}
+    refs = (node_text(n) for n in nodes if _python_is_ref(n))
+    return list(dict.fromkeys(r for r in refs if r.split(".")[0] not in bound))
 
 
 def _python_is_private(name: str, _node: Node) -> bool:
@@ -162,10 +233,11 @@ def _make_python_config() -> LanguageConfig:
         function_name_field="name",
         class_node_types=frozenset(["class_definition"]),
         class_name_field="name",
+        unwrap_definition=_python_unwrap_definition,
         is_private=_python_is_private,
         docstring_extractor=_python_extract_docstring,
         import_extractor=_python_extract_imports,
-        call_extractor=_python_extract_calls,
+        ref_extractor=_python_extract_refs,
     )
 
 

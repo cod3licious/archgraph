@@ -89,7 +89,7 @@ The script's normal `__main__` function, which parses the commandline arguments,
 
 ### prepare.process_files
 
-Gets as inputs `unit_descriptions: str` (contents of the markdown file) and `layers: dict` (parsed JSON) and calls the following functions to produce the final result (which is then returned as a `dict`):
+Gets as inputs `unit_descriptions: str` (contents of the markdown file), `layers: dict` (parsed JSON), and the `high_level_units_first` and `strict` flags and calls the following functions to produce the final result (which is then returned as a `dict`):
 
 - `@prepare.parse_unit_descriptions`
 - `@prepare.flatten_layers`
@@ -108,27 +108,26 @@ After all steps complete, assembles and returns the final result dict directly a
 Gets as input the raw contents of the markdown file as a string and returns a dictionary `units` with keys: full unit path (= header in the markdown file without the leading `### `) and as values a dict with:
 - submodule (str): the part of the unit path before the last dot
 - name (str): the part of the unit path after the last dot
-- description (str): all the text after the unit's header until the next header (stripped of leading and trailing whitespace)
-- dependencies (dict[str, True]): a dictionary with all of the mentioned dependencies (without the @), without further validation (i.e., NOT yet checking that they match other unit paths in the file), always mapping to True (i.e., declaring the dependency valid by default, as a placeholder until `check_layer_violations` is run)
+- description (str): all the text after the unit's header until the next header (stripped of leading and trailing whitespace); `###` lines inside fenced code blocks belong to the description
+- dependencies (dict[str, True]): a dictionary with all of the mentioned dependencies (without the @ and ignoring trailing characters like `()` or `,` inside the backticks), without further validation (i.e., NOT yet checking that they match other unit paths in the file), always mapping to True (i.e., declaring the dependency valid by default, as a placeholder until `check_layer_violations` is run)
 
-Additionally, the function returns `unit_order`, a dict with {submodule: list of the short unit names (not full paths) from this submodule in the order they occurred in the file}.
+The units keep the order in which they occurred in the file.
 
-The function raises an error if any unit path occurs twice in the file.
+The function raises an error if any unit path occurs twice in the file or a heading is empty or has no dot.
 
 
 ### prepare.flatten_layers
 
-Gets the parsed JSON (`layers` dict, with keys `root_layers` and `submodule_layers`) and flattens it into a list `all_submodules` with all submodules in the right order. It does this by iterating over `root_layers` (the list of lists) and for each module either:
-- adding it directly to `all_submodules` if it does not appear as a key in `submodule_layers` (i.e., it is already a leaf/file-level module), or
-- extending `all_submodules` with the submodules from `submodule_layers[module]` (iterating over that module's list of lists in order).
+Gets the parsed JSON (`layers` dict, with keys `root_layers` and optionally `submodule_layers`), validates its shape, and flattens it into an ordered dict `sm_info` mapping each submodule to `(root_row_idx, intra_row_idx, module)`. It does this by iterating over `root_layers` (the list of lists) and for each module either:
+- adding the module itself as its only submodule if it does not appear as a key in `submodule_layers` (i.e., it is already a leaf/file-level module), or
+- adding the submodules from `submodule_layers[module]` (iterating over that module's list of lists in order).
 
-Throws an error if any submodule in `submodule_layers` does not start with its containing module name followed by a dot.
-Once `all_submodules` is built, checks that all elements are unique and throws an error if not. Then returns `all_submodules`.
+Throws an error if any submodule in `submodule_layers` neither equals its containing module name (a module may list itself to hold module-level units, e.g. from a Python `__init__.py`) nor starts with it followed by a dot, or if any submodule occurs twice.
 
 
 ### prepare.validate_unit_paths
 
-Gets the `units` dict (result from `parse_unit_descriptions`) as well as the `all_submodules` list (result from `flatten_layers`) and checks:
+Gets the `units` dict (result from `parse_unit_descriptions`) as well as the submodules (keys of the result from `flatten_layers`) and checks:
 - The unit paths (keys in `units`) can not be the same as a submodule, otherwise log `[ERROR] Unit Is Submodule: {unit_path}: a unit is supposed to be contained in a submodule (like a function or class), not be the submodule itself`.
 - Each unit's submodule must be contained in the `all_submodules` list, otherwise log: `[ERROR] Unknown Submodule: {unit_path} is not part of any submodule in the provided architectural layers`.
 
@@ -137,10 +136,10 @@ Returns True if all checks run through without errors, otherwise False.
 
 ### prepare.create_submodules_dict
 
-Gets the `all_submodules` list as well as the `unit_order` dict (result from `parse_unit_descriptions`) and creates and returns a new dict `submodules` with each submodule as a key and as the corresponding value a dict with:
-- module (str): the part until the first dot (or the whole string if it contains no dot, e.g., "main")
+Gets `sm_info` (result from `flatten_layers`) as well as the `units` dict and creates and returns a new dict `submodules` with each submodule as a key and as the corresponding value a dict with:
+- module (str): the root module the submodule belongs to according to the layers
 - color (str): "#D3D3D3" (light grey as the default color)
-- units (list[str]): the list of short unit names from `unit_order` or an empty list (and log a warning in case a submodule has no units)
+- units (list[str]): the list of short unit names (in the order they occurred in the file) or an empty list (and log a warning in case a submodule has no units)
 - dependencies (dict[str, bool]): an empty dict for now
 
 
@@ -153,20 +152,20 @@ Returns the updated `submodules` dict.
 ### prepare.resolve_dependencies
 
 Gets the `units` dict and checks that each dependency mentioned for a unit corresponds to a key in the `units` dict, i.e., is an existing unit. Several edge cases:
-- If a unit has itself as a dependency (e.g., because of a recursive call), this entry is removed from the unit's dependency dict.
 - If a dependency does not match a unit, but is a subunit of an existing unit (i.e., matches when removing the part after the last dot, e.g., `core.prediction.Model.predict` would resolve to `core.prediction.Model`), a warning is logged (`[WARNING] {unit_path} dependency {referenced_unit_path} was matched to {valid_unit_path}`) and then the corresponding dependency in the dict is updated accordingly.
+- If the (resolved) dependency is the unit itself (e.g., because of a recursive call or a reference to one of its own methods), this entry is removed from the unit's dependency dict.
 - If the dependency could still not be matched, log `[ERROR] Referenced Unit Unknown: {unit_path} depends on {referenced_unit_path}, which could not be resolved` and remove the dependency from the dict.
 
 Since we do not want to create a side effect by modifying the original `units` dict, first create a copy of it before changing any of the dependencies.
-After all units were processed, log another summary message with the number of errors (not warnings) that were encountered and then return the copy of the `units` dict with the updated dependencies.
+After all units were processed, log another summary message with the number of errors (not warnings) that were encountered. In strict mode, raise an error if there were any; otherwise return the copy of the `units` dict with the updated dependencies.
 
 
 ### prepare.check_layer_violations
 
-Gets the (updated) `units` dict (after `resolve_dependencies`) as well as the `layers` dict. Creates a copy of `units` and goes through all units' dependencies and checks that the dependencies don't violate the hierarchy defined in `layers`.
+Gets the (updated) `units` dict (after `resolve_dependencies`) as well as `sm_info` (from `flatten_layers`). Creates a copy of `units` and goes through all units' dependencies and checks that the dependencies don't violate the hierarchy defined in `layers`.
 If there is a violation, log `[WARNING] Architecture Validation: {unit_path} must not depend on {referenced_unit_path}` and set the value for this `referenced_unit_path` in the unit's dependency dict to False. Then returns the updated copy of the `units` dict.
 
-The dependency check could be done efficiently by first building an `allowed_submodule_dependencies` dict that maps from each submodule to the set of submodules it is allowed to depend on. This is derived from `layers["root_layers"]` and `layers["submodule_layers"]`: a submodule may depend on any submodule from a module in a lower root layer, and within its own module any submodule in a lower submodule layer. Then for each unit dependency, look up the unit's submodule and the dependency's submodule (via the `units` dict) and check against this set.
+A submodule may depend on any submodule from a module in a lower root layer, and within its own module on any submodule in a lower submodule layer. With the row indices from `sm_info`, each dependency check is O(1). Within the same submodule, the unit order decides (by default, units may only depend on units listed above them; with `high_level_units_first` only on units listed below them).
 
 
 ### prepare.assign_submodule_dependencies

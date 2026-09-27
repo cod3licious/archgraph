@@ -1,11 +1,9 @@
 import { showSubmoduleDetail, showUnitDetail, clearDetail } from './detail.js';
 import { commonPrefixLen, stripPrefix } from './labels.js';
+import { submoduleRows, flattenLayers, dependencyRoles } from './graph-model.js';
+import { svgEl, loadCss } from './dom.js';
 
-// ── Load visualization-specific CSS ──────────────────────────────────────────
-const link = document.createElement('link');
-link.rel = 'stylesheet';
-link.href = 'viz/box-graph.css';
-document.head.appendChild(link);
+loadCss('viz/box-graph.css');
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const PAD_X = 48, PAD_Y = 40;
@@ -60,11 +58,14 @@ export function render(data) {
   // 1. Determine ordered list of submodules
   const allSubmodules = flattenLayers(layers);
 
-  // 2. Compute box sizes (content-based), then expand for port symbols
+  // 2. Compute box sizes (content-based), then expand for port symbols. Widening
+  //    boxes doesn't change their left-to-right order within a row, so the port
+  //    sides (and thus symbol counts) stay the same after the re-layout.
   const boxSizes = computeBoxSizes(allSubmodules, submodules);
-  let layout = computeLayout(layers, allSubmodules, submodules, boxSizes);
-  if (expandBoxesForSymbols(submodules, layout, boxSizes))
-    layout = computeLayout(layers, allSubmodules, submodules, boxSizes);
+  let layout = computeLayout(layers, boxSizes);
+  const edges = buildEdges(submodules, layout);
+  if (expandBoxesForSymbols(connectionsBySide(edges, layout, boxSizes), boxSizes))
+    layout = computeLayout(layers, boxSizes);
 
   // 3. Total canvas size
   const totalW = Math.max(...Object.values(layout).map(p => p.x + boxSizes[p.submodule].w)) + PAD_X;
@@ -88,26 +89,10 @@ export function render(data) {
   }
 
   // 6. Draw arrows + port symbols
-  const { arrowEls, portSymbolEls } = drawArrows(submodules, layout, boxSizes, totalW, totalH);
+  const { arrowEls, portSymbolEls } = drawArrows(edges, connectionsBySide(edges, layout, boxSizes), layout, boxSizes, totalW, totalH);
 
   // 7. Wire interactions
   wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, layout, boxSizes);
-}
-
-// ── Layer flattening ─────────────────────────────────────────────────────────
-function flattenLayers(layers) {
-  const allSubmodules = [];
-  for (const rowModules of layers.root_layers) {
-    for (const mod of rowModules) {
-      if (layers.submodule_layers && layers.submodule_layers[mod]) {
-        for (const subRow of layers.submodule_layers[mod])
-          for (const sm of subRow) allSubmodules.push(sm);
-      } else {
-        allSubmodules.push(mod);
-      }
-    }
-  }
-  return allSubmodules;
 }
 
 // ── Box sizing ───────────────────────────────────────────────────────────────
@@ -129,12 +114,12 @@ function computeBoxSizes(allSubmodules, submodules) {
     const titleW = sm.length * CHAR_W + SIDE_PAD;
     const colsW  = colWidths.reduce((s, w) => s + w, 0) + (cols - 1) * COL_GAP + SIDE_PAD;
     const contentW = Math.max(BOX_MIN_W, titleW, colsW);
-    sizes[sm] = { w: contentW, h, contentW };
+    sizes[sm] = { w: contentW, h, contentW, cols };
   }
   return sizes;
 }
 
-// ── Connection sides (shared by expandBoxesForSymbols and drawArrows) ────────
+// ── Connection sides ─────────────────────────────────────────────────────────
 function connectionSides(from, to, layout, boxSizes) {
   const rf = layout[from].rowIdx, rt = layout[to].rowIdx;
   if (rf < rt) return { fromSide: 'bottom', toSide: 'top' };
@@ -146,26 +131,34 @@ function connectionSides(from, to, layout, boxSizes) {
     : { fromSide: 'left',  toSide: 'right' };
 }
 
-// ── Expand boxes so port symbols fit ─────────────────────────────────────────
-function expandBoxesForSymbols(submodules, layout, boxSizes) {
-  const symCount = {};
+// ── Edges (only cross-submodule) ─────────────────────────────────────────────
+function buildEdges(submodules, layout) {
+  return Object.entries(submodules).flatMap(([from, smData]) =>
+    Object.entries(smData.dependencies || {})
+      .filter(([to]) => from !== to && layout[from] && layout[to])
+      .map(([to, valid]) => ({ from, to, valid }))
+  );
+}
+
+// connSide[sm][side] = [{partner, isOut, valid}, ...]
+function connectionsBySide(edges, layout, boxSizes) {
+  const connSide = {};
   for (const sm of Object.keys(layout))
-    symCount[sm] = { top: 0, bottom: 0, left: 0, right: 0 };
-
-  for (const [from, smData] of Object.entries(submodules)) {
-    for (const to of Object.keys(smData.dependencies || {})) {
-      if (from === to || !layout[from] || !layout[to]) continue;
-      const { fromSide, toSide } = connectionSides(from, to, layout, boxSizes);
-      symCount[from][fromSide]++;
-      symCount[to][toSide]++;
-    }
+    connSide[sm] = { top: [], bottom: [], left: [], right: [] };
+  for (const { from, to, valid } of edges) {
+    const { fromSide, toSide } = connectionSides(from, to, layout, boxSizes);
+    connSide[from][fromSide].push({ partner: to,   isOut: true,  valid });
+    connSide[to][toSide].push(    { partner: from, isOut: false, valid });
   }
+  return connSide;
+}
 
+// ── Expand boxes so port symbols fit ─────────────────────────────────────────
+function expandBoxesForSymbols(connSide, boxSizes) {
   let changed = false;
-  for (const sm of Object.keys(symCount)) {
-    const c = symCount[sm];
-    const minHoriz = Math.max(c.top, c.bottom);
-    const minVert  = Math.max(c.left, c.right);
+  for (const [sm, c] of Object.entries(connSide)) {
+    const minHoriz = Math.max(c.top.length, c.bottom.length);
+    const minVert  = Math.max(c.left.length, c.right.length);
     if (minHoriz > 0) {
       const need = (minHoriz - 1) * SYM_GAP + 2 * SYM_MARGIN;
       if (need > boxSizes[sm].w) { boxSizes[sm].w = need; changed = true; }
@@ -180,18 +173,15 @@ function expandBoxesForSymbols(submodules, layout, boxSizes) {
 
 // ── Layout ───────────────────────────────────────────────────────────────────
 // Returns layout: { [sm]: { x, y, submodule, rowIdx } }
-function computeLayout(layers, allSubmodules, submodules, boxSizes) {
+function computeLayout(layers, boxSizes) {
   const layout = {};
   const bandSms = [];
   let bandY = PAD_Y;
   let globalRowIdx = 0;
 
   for (const rootRow of layers.root_layers) {
-    const moduleCols = rootRow.map(mod =>
-      (layers.submodule_layers && layers.submodule_layers[mod])
-        ? layers.submodule_layers[mod]
-        : [[mod]]
-    );
+    const moduleCols = rootRow.map(mod => submoduleRows(layers, mod)).filter(col => col.length);
+    if (!moduleCols.length) continue;
 
     const maxSubRows = Math.max(...moduleCols.map(c => c.length));
 
@@ -258,10 +248,7 @@ function drawBands(container, layout, layers, boxSizes, modPrefixLen) {
   const BAND_PAD = BOX_PAD_Y;
   for (const rowModules of layers.root_layers) {
     for (const mod of rowModules) {
-      const subs = (layers.submodule_layers && layers.submodule_layers[mod])
-        ? layers.submodule_layers[mod].flat()
-        : [mod];
-      const placed = subs.filter(sm => layout[sm]);
+      const placed = submoduleRows(layers, mod).flat().filter(sm => layout[sm]);
       if (!placed.length) continue;
 
       const xs    = placed.map(sm => layout[sm].x);
@@ -310,8 +297,7 @@ function drawBox(container, sm, data, pos, sz, modPrefixLen) {
   const unitsDiv = document.createElement('div');
   unitsDiv.className = 'box-units';
   const units = data.units || [];
-  const cols  = units.length > COLS_THRESHOLD ? 2 : 1;
-  unitsDiv.style.gridTemplateColumns = cols === 2 ? '1fr 1fr' : '1fr';
+  unitsDiv.style.gridTemplateColumns = sz.cols === 2 ? '1fr 1fr' : '1fr';
   if (sz.contentW < sz.w) {
     unitsDiv.style.maxWidth = sz.contentW + 'px';
     unitsDiv.style.margin = '0 auto';
@@ -332,33 +318,13 @@ function drawBox(container, sm, data, pos, sz, modPrefixLen) {
 }
 
 // ── Arrow drawing ────────────────────────────────────────────────────────────
-function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
+function drawArrows(edges, connSide, layout, boxSizes, totalW, totalH) {
   const svg = document.getElementById('arrow-svg');
   svg.setAttribute('width',  totalW);
   svg.setAttribute('height', totalH);
   const symSvg = document.getElementById('symbol-svg');
   symSvg.setAttribute('width',  totalW);
   symSvg.setAttribute('height', totalH);
-
-  // Build edge list (only cross-submodule)
-  const edges = []; // { from, to, valid }
-  for (const [from, smData] of Object.entries(submodules)) {
-    for (const [to, valid] of Object.entries(smData.dependencies || {})) {
-      if (from !== to && layout[from] && layout[to])
-        edges.push({ from, to, valid });
-    }
-  }
-
-  // connSide[sm][side] = [{partner, isOut, valid}, ...]
-  const connSide = {};
-  for (const sm of Object.keys(layout))
-    connSide[sm] = { top: [], bottom: [], left: [], right: [] };
-
-  for (const { from, to, valid } of edges) {
-    const { fromSide, toSide } = connectionSides(from, to, layout, boxSizes);
-    connSide[from][fromSide].push({ partner: to,   isOut: true,  valid });
-    connSide[to][toSide].push(    { partner: from, isOut: false, valid });
-  }
 
   // portOut[from][to] and portIn[to][from] store {x, y, side}
   const portOut = {}, portIn = {};
@@ -416,8 +382,7 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
         }
         el.setAttribute('fill', color);
         el.classList.add('port-symbol');
-        el.dataset.sm = sm;
-        el.dataset.partner = partner;
+        el.dataset.edge = isOut ? `${sm}->${partner}` : `${partner}->${sm}`;
         symSvg.appendChild(el);
         syms.push(el);
       });
@@ -446,10 +411,6 @@ function drawArrows(submodules, layout, boxSizes, totalW, totalH) {
   }
 
   return { arrowEls, portSymbolEls };
-}
-
-function svgEl(tag) {
-  return document.createElementNS('http://www.w3.org/2000/svg', tag);
 }
 
 function bezierPath(p1, p2) {
@@ -497,7 +458,7 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
         el.classList.add('focused');
         for (const u of el.querySelectorAll('.unit-name')) {
           u.classList.remove(...UNIT_CLASSES);
-          u.classList.add(unitClassifier(sm, u.dataset.unit));
+          u.classList.add(unitClassifier(u.dataset.unit));
         }
       } else {
         el.classList.add('dimmed');
@@ -512,64 +473,16 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
       if (relevantArrows.has(key)) { el.classList.add('visible'); el.classList.remove('dimmed'); }
       else { el.classList.remove('visible'); el.classList.add('dimmed'); }
     }
-    for (const [sm, syms] of Object.entries(portSymbolEls))
-      for (const el of syms) {
-        const p = el.dataset.partner;
-        if (relevantArrows.has(`${sm}->${p}`) || relevantArrows.has(`${p}->${sm}`))
-          el.classList.remove('dimmed');
-        else el.classList.add('dimmed');
-      }
+    for (const syms of Object.values(portSymbolEls))
+      for (const el of syms) el.classList.toggle('dimmed', !relevantArrows.has(el.dataset.edge));
   }
 
-  function selectSubmodule(sm) {
-    selection = { type: 'submodule', id: sm };
-
-    const outDeps = Object.keys(submodules[sm]?.dependencies || {});
-    const referencedUnits = new Set(
-      (submodules[sm]?.units || []).flatMap(name =>
-        Object.keys(units[`${sm}.${name}`]?.dependencies || {})
-      )
-    );
-
-    const inDeps = Object.keys(submodules).filter(s =>
-      s !== sm && submodules[s].dependencies?.[sm] !== undefined
-    );
-    const referencingUnits = new Set(
-      Object.values(units)
-        .filter(u => u.submodule !== sm && Object.keys(u.dependencies || {}).some(d => units[d]?.submodule === sm))
-        .map(u => `${u.submodule}.${u.name}`)
-    );
-
-    const relevant = new Set([sm, ...outDeps, ...inDeps]);
-    const relevantArrows = new Set([
-      ...outDeps.map(d => `${sm}->${d}`),
-      ...inDeps.map(s => `${s}->${sm}`),
-    ]);
-
-    applyHighlighting(relevant, relevantArrows, (s, uPath) => {
-      if (s === sm)                        return 'is-selected';
-      if (referencedUnits.has(uPath))      return 'is-callee';
-      if (referencingUnits.has(uPath))     return 'is-caller';
-      return 'dimmed';
-    });
-    showSubmoduleDetail(sm, submodules[sm], units);
-  }
-
-  function selectUnit(unitPath) {
-    selection = { type: 'unit', id: unitPath };
-    const unitData = units[unitPath];
-    if (!unitData) return;
-    const sm = unitData.submodule;
-
-    const calleeUnits = new Set(Object.keys(unitData.dependencies || {}));
-    const calleeSubs  = new Set([...calleeUnits].map(u => units[u]?.submodule).filter(s => s && s !== sm));
-
-    const callerUnits = new Set(
-      Object.entries(units)
-        .filter(([p, u]) => p !== unitPath && u.dependencies?.[unitPath] !== undefined)
-        .map(([p]) => p)
-    );
-    const callerSubs = new Set([...callerUnits].map(u => units[u]?.submodule).filter(s => s && s !== sm));
+  // Focus the submodule `sm` and the selected units within it
+  function select(sm, selectedUnits) {
+    const selected = new Set(selectedUnits);
+    const { callees, callers } = dependencyRoles(units, selected);
+    const otherSubs = unitSet => new Set([...unitSet].map(u => units[u]?.submodule).filter(s => s && s !== sm));
+    const calleeSubs = otherSubs(callees), callerSubs = otherSubs(callers);
 
     const relevant = new Set([sm, ...calleeSubs, ...callerSubs]);
     const relevantArrows = new Set([
@@ -577,13 +490,27 @@ function wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, la
       ...[...callerSubs].map(s => `${s}->${sm}`),
     ]);
 
-    applyHighlighting(relevant, relevantArrows, (_s, uPath) => {
-      if (uPath === unitPath)          return 'is-selected';
-      if (calleeUnits.has(uPath))      return 'is-callee';
-      if (callerUnits.has(uPath))      return 'is-caller';
+    applyHighlighting(relevant, relevantArrows, uPath => {
+      if (selected.has(uPath)) return 'is-selected';
+      if (callees.has(uPath))  return 'is-callee';
+      if (callers.has(uPath))  return 'is-caller';
       return 'dimmed';
     });
-    boxEls[sm].classList.add('is-unit-selected');
+  }
+
+  function selectSubmodule(sm) {
+    selection = { type: 'submodule', id: sm };
+    const unitPaths = (submodules[sm]?.units || []).map(name => `${sm}.${name}`);
+    select(sm, unitPaths);
+    showSubmoduleDetail(sm, unitPaths, units);
+  }
+
+  function selectUnit(unitPath) {
+    selection = { type: 'unit', id: unitPath };
+    const unitData = units[unitPath];
+    if (!unitData) return;
+    select(unitData.submodule, [unitPath]);
+    boxEls[unitData.submodule].classList.add('is-unit-selected');
     showUnitDetail(unitPath, unitData);
   }
 
