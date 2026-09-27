@@ -2,17 +2,17 @@ import { showSubmoduleDetail, showUnitDetail, clearDetail } from './detail.js';
 import { commonPrefixLen, stripPrefix } from './labels.js';
 import { submoduleRows, flattenLayers, dependencyRoles } from './graph-model.js';
 import { svgEl, loadCss } from './dom.js';
+import { boxSize, TITLE_H, UNIT_ROW_H, UNITS_PAD_Y, COL_GAP } from './box-size.js';
 
 loadCss('viz/box-graph.css');
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const PAD_X = 48, PAD_Y = 40;
 const BOX_GAP_X = 32, BOX_GAP_Y = 28;
-const BOX_MIN_W = 130;
-const UNIT_ROW_H = 20;
-const TITLE_H = 26;
-const BOX_PAD_Y = 10; // top+bottom padding inside box units area
-const COLS_THRESHOLD = 4; // use 2 columns when unit count > this
+const BOX_PAD_Y = 10; // vertical padding of the layer bands
+// Fonts used to measure text widths; must match box-graph.css. Unit names are measured
+// in bold, so highlighted (bold) names still fit their column.
+const UNIT_FONT = 'bold 11px', TITLE_FONT = '600 10px';
 const BAND_LABEL_H = 18; // vertical space reserved for the layer label above boxes
 
 const VALID_COLOR     = '#333'; // arrow stroke for valid dependencies
@@ -58,14 +58,19 @@ export function render(data) {
   // 1. Determine ordered list of submodules
   const allSubmodules = flattenLayers(layers);
 
-  // 2. Compute box sizes (content-based), then expand for port symbols. Widening
-  //    boxes doesn't change their left-to-right order within a row, so the port
-  //    sides (and thus symbol counts) stay the same after the re-layout.
-  const boxSizes = computeBoxSizes(allSubmodules, submodules);
+  // 2. Compute box sizes (content-based), then enlarge them so the port symbols fit.
+  //    Widening boxes doesn't change their left-to-right order within a row, so the
+  //    port sides (and thus symbol counts) stay the same after the re-layout.
+  const measureUnit = textMeasurer(UNIT_FONT), measureTitle = textMeasurer(TITLE_FONT);
+  const sizeOf = (sm, minW, minH) =>
+    boxSize(stripPrefix(sm, modPrefixLen), submodules[sm]?.units || [], measureUnit, measureTitle, minW, minH);
+  const boxSizes = Object.fromEntries(allSubmodules.map(sm => [sm, sizeOf(sm)]));
   let layout = computeLayout(layers, boxSizes);
   const edges = buildEdges(submodules, layout);
-  if (expandBoxesForSymbols(connectionsBySide(edges, layout, boxSizes), boxSizes))
-    layout = computeLayout(layers, boxSizes);
+  for (const [sm, c] of Object.entries(connectionsBySide(edges, layout, boxSizes)))
+    boxSizes[sm] = sizeOf(sm, symbolSpan(Math.max(c.top.length, c.bottom.length)),
+                              symbolSpan(Math.max(c.left.length, c.right.length)));
+  layout = computeLayout(layers, boxSizes);
 
   // 3. Total canvas size
   const totalW = Math.max(...Object.values(layout).map(p => p.x + boxSizes[p.submodule].w)) + PAD_X;
@@ -93,30 +98,6 @@ export function render(data) {
 
   // 7. Wire interactions
   wireInteractions(boxEls, arrowEls, portSymbolEls, submodules, units, layout, boxSizes);
-}
-
-// ── Box sizing ───────────────────────────────────────────────────────────────
-function computeBoxSizes(allSubmodules, submodules) {
-  const CHAR_W = 7, COL_GAP = 12, SIDE_PAD = 28;
-  const sizes = {};
-  for (const sm of allSubmodules) {
-    const data  = submodules[sm] || { units: [] };
-    const units = data.units || [];
-    const cols  = units.length > COLS_THRESHOLD ? 2 : 1;
-    const rows  = Math.ceil(units.length / cols);
-    const h = TITLE_H + BOX_PAD_Y + rows * UNIT_ROW_H;
-
-    // Width: sum of max unit-name width per column + gaps + side padding
-    const colWidths = Array.from({ length: cols }, (_, c) => {
-      const colUnits = units.filter((_, i) => i % cols === c);
-      return colUnits.length ? Math.max(...colUnits.map(u => u.length * CHAR_W)) : 0;
-    });
-    const titleW = sm.length * CHAR_W + SIDE_PAD;
-    const colsW  = colWidths.reduce((s, w) => s + w, 0) + (cols - 1) * COL_GAP + SIDE_PAD;
-    const contentW = Math.max(BOX_MIN_W, titleW, colsW);
-    sizes[sm] = { w: contentW, h, contentW, cols };
-  }
-  return sizes;
 }
 
 // ── Connection sides ─────────────────────────────────────────────────────────
@@ -153,22 +134,9 @@ function connectionsBySide(edges, layout, boxSizes) {
   return connSide;
 }
 
-// ── Expand boxes so port symbols fit ─────────────────────────────────────────
-function expandBoxesForSymbols(connSide, boxSizes) {
-  let changed = false;
-  for (const [sm, c] of Object.entries(connSide)) {
-    const minHoriz = Math.max(c.top.length, c.bottom.length);
-    const minVert  = Math.max(c.left.length, c.right.length);
-    if (minHoriz > 0) {
-      const need = (minHoriz - 1) * SYM_GAP + 2 * SYM_MARGIN;
-      if (need > boxSizes[sm].w) { boxSizes[sm].w = need; changed = true; }
-    }
-    if (minVert > 0) {
-      const need = (minVert - 1) * SYM_GAP + 2 * SYM_MARGIN;
-      if (need > boxSizes[sm].h) { boxSizes[sm].h = need; changed = true; }
-    }
-  }
-  return changed;
+// Box edge length needed to fit n port symbols
+function symbolSpan(n) {
+  return n ? (n - 1) * SYM_GAP + 2 * SYM_MARGIN : 0;
 }
 
 // ── Layout ───────────────────────────────────────────────────────────────────
@@ -292,16 +260,18 @@ function drawBox(container, sm, data, pos, sz, modPrefixLen) {
   const title = document.createElement('div');
   title.className = 'box-title';
   title.textContent = stripPrefix(sm, modPrefixLen);
+  title.style.height = TITLE_H + 'px';
+  title.style.lineHeight = (TITLE_H - 1) + 'px'; // minus the bottom border
   box.appendChild(title);
 
   const unitsDiv = document.createElement('div');
   unitsDiv.className = 'box-units';
   const units = data.units || [];
-  unitsDiv.style.gridTemplateColumns = sz.cols === 2 ? '1fr 1fr' : '1fr';
-  if (sz.contentW < sz.w) {
-    unitsDiv.style.maxWidth = sz.contentW + 'px';
-    unitsDiv.style.margin = '0 auto';
-  }
+  // Fixed row heights, so the box height computed in boxSize is exact
+  unitsDiv.style.gridTemplateRows = `repeat(${sz.rows}, ${UNIT_ROW_H}px)`;
+  unitsDiv.style.gridTemplateColumns = `repeat(${sz.cols}, max-content)`;
+  unitsDiv.style.columnGap = COL_GAP + 'px';
+  unitsDiv.style.paddingBlock = UNITS_PAD_Y / 2 + 'px';
 
   for (const u of units) {
     const span = document.createElement('span');
@@ -411,6 +381,13 @@ function drawArrows(edges, connSide, layout, boxSizes, totalW, totalH) {
   }
 
   return { arrowEls, portSymbolEls };
+}
+
+// Text width in px for the given font (e.g. 'bold 11px') in the page's font family
+function textMeasurer(font) {
+  const ctx = document.createElement('canvas').getContext('2d');
+  ctx.font = `${font} ${getComputedStyle(document.body).fontFamily}`;
+  return text => Math.ceil(ctx.measureText(text).width);
 }
 
 function bezierPath(p1, p2) {
