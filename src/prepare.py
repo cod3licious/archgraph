@@ -11,8 +11,9 @@ logger = logging.getLogger(__name__)
 # CommonMark allows up to 3 spaces of indentation for headings and code fences
 HEADING_RE = re.compile(r" {0,3}###(?=[ \t]|$)(.*)")
 FENCE_RE = re.compile(r" {0,3}(`{3,}|~{3,})")
-# Group 1 is everything inside the backticks after the @, group 2 the unit path (trailing "()", "," etc. ignored)
-REF_RE = re.compile(r"`@((\w+(?:\.\w+)*)?[^`\n]*)`")
+# Group 1 is everything inside the backticks after the @, group 2 the unit path (trailing "()", "," etc. ignored);
+# path segments may contain hyphens, since file names (and thus module paths) do, e.g. in TypeScript
+REF_RE = re.compile(r"`@(([\w-]+(?:\.[\w-]+)*)?[^`\n]*)`")
 
 
 def parse_unit_descriptions(unit_descriptions: str) -> dict[str, dict]:
@@ -188,6 +189,55 @@ def resolve_dependencies(units: dict, *, strict: bool = False) -> dict:
     return result
 
 
+def _dependency_order(paths: list[str], units: dict, *, high_level_units_first: bool) -> list[str]:
+    """Order the units of one submodule so their dependencies on each other point in the expected direction.
+
+    Units are taken in the given order, and each is placed right after its prerequisites
+    that aren't placed yet (recursively, depth-first): its dependencies (low-level first)
+    or the units depending on it (high-level first). An already valid order is therefore
+    kept as is, and a unit only moves up if something above it needs it. In a dependency
+    cycle, the prerequisite that closes the cycle is skipped, so that one dependency
+    points in the wrong direction.
+    """
+    deps = {path: [d for d in paths if d in units[path]["dependencies"] and d != path] for path in paths}
+    prereqs = {path: [p for p in paths if path in deps[p]] for path in paths} if high_level_units_first else deps
+    order: list[str] = []
+    seen: set[str] = set()
+    for start in paths:
+        if start in seen:
+            continue
+        seen.add(start)
+        # Iterative depth-first search, so long dependency chains can't hit the recursion limit
+        stack = [(start, iter(prereqs[start]))]
+        while stack:
+            path, pending = stack[-1]
+            nxt = next((p for p in pending if p not in seen), None)
+            if nxt is None:
+                stack.pop()
+                order.append(path)
+            else:
+                seen.add(nxt)
+                stack.append((nxt, iter(prereqs[nxt])))
+    return order
+
+
+def sort_units_by_dependencies(units: dict, *, high_level_units_first: bool = False) -> dict:
+    """Reorder the units within each submodule by their dependencies on each other (see _dependency_order).
+
+    Each submodule's units take up the same positions in the dict as before, just in a
+    different order, so units of different submodules are never mixed up.
+    Does not modify the input dict.
+    """
+    by_submodule: dict[str, list[str]] = {}
+    for path, unit in units.items():
+        by_submodule.setdefault(unit["submodule"], []).append(path)
+    ordered = {
+        sm: iter(_dependency_order(paths, units, high_level_units_first=high_level_units_first))
+        for sm, paths in by_submodule.items()
+    }
+    return {(path := next(ordered[unit["submodule"]])): units[path] for unit in units.values()}
+
+
 def check_layer_violations(
     units: dict, sm_info: dict[str, tuple[int, int, str]], *, high_level_units_first: bool = False
 ) -> dict:
@@ -254,14 +304,23 @@ def assign_submodule_dependencies(submodules: dict, units: dict) -> dict:
     return {sm: {**sm_data, "dependencies": sm_deps[sm]} for sm, sm_data in submodules.items()}
 
 
-def process_files(unit_descriptions: str, layers: dict, *, high_level_units_first: bool = False, strict: bool = False) -> dict:
+def process_files(
+    unit_descriptions: str,
+    layers: dict,
+    *,
+    high_level_units_first: bool = False,
+    strict: bool = False,
+    sort_units: bool = False,
+) -> dict:
     units = parse_unit_descriptions(unit_descriptions)
     sm_info = flatten_layers(layers)
     if not validate_unit_paths(units, sm_info):
         raise ValueError("Unit path validation failed - see errors above")
+    units = resolve_dependencies(units, strict=strict)
+    if sort_units:
+        units = sort_units_by_dependencies(units, high_level_units_first=high_level_units_first)
     submodules = create_submodules_dict(sm_info, units)
     submodules = assign_submodule_colors(submodules, layers)
-    units = resolve_dependencies(units, strict=strict)
     units = check_layer_violations(units, sm_info, high_level_units_first=high_level_units_first)
     submodules = assign_submodule_dependencies(submodules, units)
     return {
@@ -272,12 +331,21 @@ def process_files(unit_descriptions: str, layers: dict, *, high_level_units_firs
     }
 
 
-def prepare_folder(input_dir: Path, output_dir: Path, *, high_level_units_first: bool = False, strict: bool = False) -> Path:
+def prepare_folder(
+    input_dir: Path,
+    output_dir: Path,
+    *,
+    high_level_units_first: bool = False,
+    strict: bool = False,
+    sort_units: bool = False,
+) -> Path:
     """Process input_dir/layers.json and input_dir/units.md into output_dir/result.json; returns its path."""
     # utf-8-sig strips a BOM, which would otherwise break the JSON parsing and hide the first unit heading
     layers = json.loads((input_dir / "layers.json").read_text(encoding="utf-8-sig"))
     unit_descriptions = (input_dir / "units.md").read_text(encoding="utf-8-sig")
-    result = process_files(unit_descriptions, layers, high_level_units_first=high_level_units_first, strict=strict)
+    result = process_files(
+        unit_descriptions, layers, high_level_units_first=high_level_units_first, strict=strict, sort_units=sort_units
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "result.json"
     output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -294,6 +362,12 @@ def add_options(parser: argparse.ArgumentParser) -> None:
         "Default assumes low-level units first (Python convention).",
     )
     parser.add_argument("--strict", action="store_true", help="Fail if any `@` reference cannot be resolved to a unit.")
+    parser.add_argument(
+        "--sort-units",
+        action="store_true",
+        help="Reorder the units within each submodule by their dependencies on each other (in the direction set by "
+        "--high-level-units-first), e.g. when the order in units.md is arbitrary.",
+    )
 
 
 if __name__ == "__main__":
@@ -311,7 +385,11 @@ if __name__ == "__main__":
 
     try:
         prepare_folder(
-            args.input, args.output or args.input, high_level_units_first=args.high_level_units_first, strict=args.strict
+            args.input,
+            args.output or args.input,
+            high_level_units_first=args.high_level_units_first,
+            strict=args.strict,
+            sort_units=args.sort_units,
         )
     except (OSError, ValueError) as e:
         logger.critical(str(e))

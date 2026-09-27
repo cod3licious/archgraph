@@ -37,6 +37,15 @@ class ImportInfo:
     qualified_name: str  # resolved dotted path (relative imports resolved)
 
 
+def module_segment(name: str) -> str:
+    """Map a file or directory name to its segment of a dotted module path.
+
+    Everything from the first dot is dropped, so `quizFlow.svelte.ts` and an import of
+    `./quizFlow.svelte` both map to `quizFlow`.
+    """
+    return name.split(".", maxsplit=1)[0]
+
+
 @dataclass
 class LanguageConfig:
     """Language-specific tree-sitter knowledge for unit extraction."""
@@ -45,14 +54,16 @@ class LanguageConfig:
     # Filenames (without extension) that represent the directory itself,
     # e.g. "__init__" in Python, "index" in JS/TS, "mod" in Rust.
     package_filenames: frozenset[str]
-    function_node_types: frozenset[str]
-    function_name_field: str
-    class_node_types: frozenset[str]
-    class_name_field: str
-    # Top-level node -> the definition it wraps (e.g. a decorated function), or the node itself
+    definition_kinds: dict[str, str]  # definition node type -> unit kind (e.g. "function", "class")
+    name_field: str  # field of a definition node that holds its name
+    # Top-level node -> the definition it wraps (e.g. a decorated function), or None if it isn't a unit
     unwrap_definition: Callable[[Node], Node | None]
     is_private: Callable[[str, Node], bool]  # (name, definition_node) -> is private?
     is_entry_point: Callable[[Node], bool]  # top-level node -> is it a script entry point block?
-    docstring_extractor: Callable[[Node], str | None]
+    docstring_extractor: Callable[[Node], str | None]  # definition node (or file root for file units) -> docstring
     import_extractor: Callable[[Node, str, bool], list[ImportInfo]]  # (module root, module_path, is_package)
     ref_extractor: Callable[[Node], list[str]]  # names / dotted chains referenced in a definition node
+    # Raw file content -> the source to parse (e.g. only the <script> blocks of a Svelte component)
+    preprocess: Callable[[bytes], bytes] | None = None
+    # If set, each file is a single unit of this kind (e.g. a "component"), named after the file
+    file_unit_kind: str | None = None

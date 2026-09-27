@@ -76,7 +76,11 @@ if __name__ == "__main__":
     )
     try:
         result_path = prepare.prepare_folder(
-            args.output, args.output, high_level_units_first=args.high_level_units_first, strict=args.strict
+            args.output,
+            args.output,
+            high_level_units_first=args.high_level_units_first,
+            strict=args.strict,
+            sort_units=args.sort_units,
         )
     except ValueError as e:
         logger.critical(str(e))

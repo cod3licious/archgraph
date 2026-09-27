@@ -181,10 +181,8 @@ def make_config() -> LanguageConfig:
     return LanguageConfig(
         extensions=frozenset(["py"]),
         package_filenames=frozenset(["__init__"]),
-        function_node_types=frozenset(["function_definition"]),
-        function_name_field="name",
-        class_node_types=frozenset(["class_definition"]),
-        class_name_field="name",
+        definition_kinds={"function_definition": "function", "class_definition": "class"},
+        name_field="name",
         unwrap_definition=unwrap_definition,
         is_private=is_private,
         is_entry_point=is_entry_point,

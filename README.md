@@ -52,7 +52,7 @@ uv run src/prepare.py --input example_data
 
 The output is written to `example_data/result.json`; pass `--output FOLDER` to write it elsewhere.
 
-**Intra-submodule unit ordering:** By default, units within a submodule are expected to be listed low-level first (Python convention: define helper functions at the top, compose them below). If your codebase follows the opposite convention (e.g. Java/C#: high-level entry points first, helpers below), pass `--high-level-units-first`.
+**Intra-submodule unit ordering:** By default, units within a submodule are expected to be listed low-level first (Python convention: define helper functions at the top, compose them below). If your codebase follows the opposite convention (e.g. Java/C#: high-level entry points first, helpers below), pass `--high-level-units-first`. If the order in `units.md` carries no meaning (e.g., Svelte components listed alphabetically), pass `--sort-units` to reorder the units within each submodule by their dependencies on each other (in the direction set by `--high-level-units-first`); only dependency cycles are then still flagged.
 
 **Strict mode:** Unresolvable `@` references are logged as errors and dropped from the graph. Pass `--strict` to make the run fail instead.
 
@@ -78,7 +78,7 @@ python -m http.server 8000
 
 The two input files can describe any codebase. When designing a new software project, it always helps me to sketch out the individual functions and classes this way — and now I can also visualize the result to get a better feeling for what the final implementation would look like. 
 
-If you want to visualize an existing project, you can either generate the necessary input files using the `generate.py` script (using the tree-sitter library; currently only available for Python packages) or with the help of an AI agent.
+If you want to visualize an existing project, you can either generate the necessary input files using the `generate.py` script (using the tree-sitter library; currently available for Python and TypeScript/Svelte) or with the help of an AI agent.
 
 **Quick start:** `archgraph.py` generates the input files, runs `prepare.py`, and opens the visualization in your browser (served locally until you press Ctrl+C). It accepts all options of `generate.py` and `prepare.py` described here.
 
@@ -124,7 +124,16 @@ Trailing characters inside the backticks are ignored (e.g., `` `@core.db.execute
 
 `generate.py` uses [tree-sitter](https://tree-sitter.github.io/) to deterministically extract public functions, classes, their docstrings, and cross-module dependencies from a codebase. Dependencies include calls, callbacks, decorators, base classes, and type annotations (script entry points like `if __name__ == "__main__":` blocks become a `__main__` unit); they are followed through re-exports (e.g., in `__init__.py`) and through private helpers (whose own dependencies are attributed to their public callers). It writes both `units.md` and a draft `layers.json` into the specified output folder. The (sub)modules in the layers draft are arranged in rows by dependency flow: modules that depend on others (consumers) are placed at the top, each module that is depended upon (provider) directly below its lowest consumer, and isolated modules with no connections at the very bottom. Modules that don't depend on each other share a row (members of a dependency cycle get consecutive rows), rows hold at most `--max-row-width` modules, and modules within a row are ordered to reduce crossing dependencies. This gives a reasonable starting point that you should then adapt to represent the target architecture. 
 
-Currently Python is supported out of the box; see below for how to add other languages.
+Supported out of the box (see below for how to add other languages):
+- **Python** — units are public functions and classes (private = `_`-prefixed).
+- **TypeScript** (`.ts`) — units are exported functions (incl. `const f = () => ...`), classes, interfaces, type aliases, and enums (private = not exported); JSDoc or `//` comments directly above a definition become its description; top-level code (e.g., `mount(App, ...)` in `main.ts`) becomes a `__main__` unit. Files like `x.svelte.ts` and `x.ts` are merged into one module `x`. Limitations:
+  - Only relative imports (incl. dynamic `import('./x')`) are resolved, not path aliases like `$lib`.
+  - Wildcard re-exports (`export * from './x'`) are not followed.
+  - A definition exported separately (`function f() {}` + `export { f }`) counts as private, since only the `export` keyword on the definition itself is checked.
+  - Exported constants that aren't functions (e.g., `export const LIMIT = 5`) are not units.
+- **Svelte** (`.svelte`) — each component is a single unit in the submodule of its directory (e.g., `lib/components/Chip.svelte` → `lib.components.Chip`); its description is the comment at the top of its `<script>`, and all its imports count as dependencies (since the markup may use them).
+
+Files in hidden directories (e.g., `.venv`) are skipped.
 
 ```bash
 uv run src/generate.py --input /path/to/your/package --output my_project_data/
@@ -136,18 +145,20 @@ Additional options:
 - `--full-docstrings` - include full docstrings in unit descriptions (by default only the first paragraph is used)
 - `--max-row-width 5` - max (sub)modules per row in the layers draft (default 5; 0 = unlimited)
 
-Currently only Python is supported. Adding a new language requires three steps in `src/languages/`:
+Adding a new language requires three steps in `src/languages/`:
 
 1. **Write a config factory** in a new file (e.g., `make_config()` in `javascript.py`) that returns a `LanguageConfig` with:
    - `extensions` / `package_filenames` — file extensions and directory-level filenames (e.g., `{"js", "jsx"}` / `{"index"}`)
-   - `function_node_types` / `class_node_types` — tree-sitter AST node types for definitions
+   - `definition_kinds` / `name_field` — tree-sitter AST node types of definitions mapped to their unit kind (e.g., `{"function_definition": "function"}`), and the field holding a definition's name
+   - `is_private` — a function that tells whether a definition is private (e.g., `_`-prefixed in Python, not exported in TypeScript)
    - `is_entry_point` — a function that tells whether a top-level node is a script entry point block (e.g., `if __name__ == "__main__":`)
    - `unwrap_definition` — a function that returns the definition wrapped by a top-level node (e.g., a decorated function), or `None` to skip it
    - `docstring_extractor` — a function that extracts a docstring from a definition node (e.g., JSDoc comments, Javadoc)
    - `import_extractor` — a function that extracts imports as `ImportInfo(local_name, qualified_name)` from a module AST (given the module path and whether the file is a package file like `__init__.py`)
    - `ref_extractor` — a function that extracts referenced names and dotted chains (calls, callbacks, base classes, ...) from a definition node
+   - optionally `preprocess` (e.g., extract the `<script>` blocks of a Svelte file) and `file_unit_kind` (each file is a single unit of this kind, e.g., a `"component"`)
 2. **Install the grammar** — add the corresponding `tree-sitter-<language>` package to the `generate` dependency group in `pyproject.toml`.
-3. **Register it** — add an entry in `register_languages()` in `__init__.py`.
+3. **Register it** — add an entry (file extension, grammar module and function, config factory) in `register_languages()` in `__init__.py`.
 
 The main script (`generate.py`) is fully language-agnostic: it uses the config to parse files, then resolves dependencies by checking which calls land in the project's symbol index.
 

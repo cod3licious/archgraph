@@ -1,5 +1,6 @@
 import json
 import logging
+import random
 import re
 from copy import deepcopy
 from pathlib import Path
@@ -16,6 +17,7 @@ from prepare import (
     prepare_folder,
     process_files,
     resolve_dependencies,
+    sort_units_by_dependencies,
     validate_unit_paths,
 )
 
@@ -192,6 +194,12 @@ def test_parse_method_style_heading_splits_at_last_dot():
 def test_parse_ref_trailing_characters_ignored(ref):
     units = parse_unit_descriptions(f"### api.routes.f\n\nCalls {ref} to fetch rows.")
     assert units["api.routes.f"]["dependencies"] == {"core.db.query": True}
+
+
+def test_parse_ref_with_hyphens():
+    units = parse_unit_descriptions("### my-app.vite-env.f\n\nCalls `@my-app.api-client.fetch()`.")
+    assert units["my-app.vite-env.f"]["submodule"] == "my-app.vite-env"
+    assert units["my-app.vite-env.f"]["dependencies"] == {"my-app.api-client.fetch": True}
 
 
 def test_parse_unparseable_ref_kept_verbatim():
@@ -698,6 +706,172 @@ def test_resolve_strict_passes_when_all_resolved(caplog):
     units = _make_units({"a.b.f": ["a.b.g", "a.b.g.method", "a.b.f"], "a.b.g": []})
     result, _ = _capture(resolve_dependencies, units, strict=True, caplog=caplog)
     assert result["a.b.f"]["dependencies"] == {"a.b.g": True}
+
+
+# ---------------------------------------------------------------------------
+# sort_units_by_dependencies
+# ---------------------------------------------------------------------------
+
+
+def _intra_violations(units: dict, *, high_level_units_first: bool = False) -> set[tuple[str, str]]:
+    """(unit, dependency) pairs within a submodule that point in the wrong direction."""
+    pos = {path: i for i, path in enumerate(units)}
+    return {
+        (path, dep)
+        for path, unit in units.items()
+        for dep in unit["dependencies"]
+        if dep in units
+        and dep != path
+        and units[dep]["submodule"] == unit["submodule"]
+        and (pos[dep] < pos[path] if high_level_units_first else pos[dep] > pos[path])
+    }
+
+
+@pytest.mark.parametrize("high_level_units_first", [False, True])
+def test_sort_empty(high_level_units_first):
+    assert sort_units_by_dependencies({}, high_level_units_first=high_level_units_first) == {}
+
+
+def test_sort_low_level_first():
+    units = _make_units({"a.x.top": ["a.x.mid"], "a.x.mid": ["a.x.low"], "a.x.low": []})
+    assert list(sort_units_by_dependencies(units)) == ["a.x.low", "a.x.mid", "a.x.top"]
+
+
+def test_sort_high_level_first():
+    units = _make_units({"a.x.low": [], "a.x.mid": ["a.x.low"], "a.x.top": ["a.x.mid"]})
+    assert list(sort_units_by_dependencies(units, high_level_units_first=True)) == ["a.x.top", "a.x.mid", "a.x.low"]
+
+
+@pytest.mark.parametrize("high_level_units_first", [False, True])
+def test_sort_keeps_valid_and_independent_orders(high_level_units_first):
+    """Units without dependencies on each other, or already in a valid order, keep their positions."""
+    independent = _make_units({"a.x.c": [], "a.x.a": [], "a.x.b": []})
+    assert list(sort_units_by_dependencies(independent, high_level_units_first=high_level_units_first)) == list(independent)
+    chain = {"a.x.low": [], "a.x.mid": ["a.x.low"], "a.x.free": [], "a.x.top": ["a.x.mid", "a.x.low"]}
+    units = _make_units(dict(reversed(chain.items())) if high_level_units_first else chain)
+    assert list(sort_units_by_dependencies(units, high_level_units_first=high_level_units_first)) == list(units)
+
+
+def test_sort_moves_only_what_is_needed():
+    """Unrelated units keep their positions; a dependency moves up to just before its first consumer."""
+    units = _make_units({"a.x.p": [], "a.x.f": ["a.x.h"], "a.x.q": [], "a.x.h": []})
+    assert list(sort_units_by_dependencies(units)) == ["a.x.p", "a.x.h", "a.x.f", "a.x.q"]
+
+
+def test_sort_only_within_submodules():
+    """Each submodule's units keep the positions of that submodule (even interleaved); other deps are ignored."""
+    units = _make_units(
+        {
+            "a.x.f": ["a.x.g", "b.y.h"],
+            "b.y.i": ["b.y.h"],
+            "a.x.g": [],
+            "b.y.h": ["a.x.f"],
+        }
+    )
+    result = sort_units_by_dependencies(units)
+    assert list(result) == ["a.x.g", "b.y.h", "a.x.f", "b.y.i"]
+    assert [u["submodule"] for u in result.values()] == [u["submodule"] for u in units.values()]
+
+
+def test_sort_ignores_self_and_unknown_deps():
+    units = _make_units({"a.x.f": ["a.x.f", "a.x.missing"], "a.x.g": ["a.x.g"]})
+    assert list(sort_units_by_dependencies(units)) == ["a.x.f", "a.x.g"]
+
+
+def test_sort_does_not_modify_input():
+    units = _make_units({"a.x.f": ["a.x.g"], "a.x.g": []})
+    snapshot = deepcopy(units)
+    result = sort_units_by_dependencies(units)
+    assert units == snapshot
+    assert list(units) == ["a.x.f", "a.x.g"]
+    assert result == units  # same entries, just reordered
+    assert all(result[path] is units[path] for path in units)
+
+
+def test_sort_cycle_is_placed_before_its_consumer():
+    """Only the dependency closing the cycle points the wrong way."""
+    units = _make_units({"a.x.user": ["a.x.b"], "a.x.b": ["a.x.a"], "a.x.a": ["a.x.b"]})
+    result = sort_units_by_dependencies(units)
+    assert list(result) == ["a.x.a", "a.x.b", "a.x.user"]
+    assert _intra_violations(result) == {("a.x.a", "a.x.b")}
+
+
+def test_sort_cycle_high_level_first():
+    units = _make_units({"a.x.a": ["a.x.b"], "a.x.b": ["a.x.a"], "a.x.user": ["a.x.b"]})
+    result = sort_units_by_dependencies(units, high_level_units_first=True)
+    assert list(result) == ["a.x.user", "a.x.b", "a.x.a"]
+    assert _intra_violations(result, high_level_units_first=True) == {("a.x.a", "a.x.b")}
+
+
+def test_sort_multiple_cycles_and_chains():
+    units = _make_units(
+        {
+            "a.x.top": ["a.x.c1", "a.x.d1"],
+            "a.x.c1": ["a.x.c2"],
+            "a.x.c2": ["a.x.c3"],
+            "a.x.c3": ["a.x.c1", "a.x.base"],
+            "a.x.d1": ["a.x.d2"],
+            "a.x.d2": ["a.x.d1"],
+            "a.x.base": [],
+        }
+    )
+    result = sort_units_by_dependencies(units)
+    assert list(result) == ["a.x.base", "a.x.c3", "a.x.c2", "a.x.c1", "a.x.d2", "a.x.d1", "a.x.top"]
+    # only one dependency per cycle points the wrong way
+    violations = _intra_violations(result)
+    assert len(violations) == 2
+    assert all(path.startswith(("a.x.c", "a.x.d")) and dep.startswith(("a.x.c", "a.x.d")) for path, dep in violations)
+
+
+@pytest.mark.parametrize("seed", range(30))
+@pytest.mark.parametrize("high_level_units_first", [False, True])
+def test_sort_random_graphs(seed, high_level_units_first):
+    """Sorting is a permutation within each submodule's positions; acyclic dependencies end up all valid."""
+    rng = random.Random(seed)
+    names = [f"{sm}.u{i}" for sm in ("a.x", "a.y", "b.z") for i in range(rng.randint(0, 12))]
+    rank = {name: rng.random() for name in names}  # dependencies only point to lower ranks -> acyclic
+    deps = {
+        name: [d for d in names if rank[d] < rank[name] and rng.random() < 0.3] + rng.sample(["a.x.missing", name], k=1)
+        for name in names
+    }
+    rng.shuffle(names)
+    units = _make_units({name: deps[name] for name in names})
+
+    result = sort_units_by_dependencies(units, high_level_units_first=high_level_units_first)
+
+    assert sorted(result) == sorted(units)
+    assert len(result) == len(units)
+    assert all(result[path] is units[path] for path in units)
+    assert [u["submodule"] for u in result.values()] == [u["submodule"] for u in units.values()]
+    assert _intra_violations(result, high_level_units_first=high_level_units_first) == set()
+
+    # with random extra edges (possibly cycles), no unit is lost or duplicated either
+    for name in names:
+        units[name]["dependencies"].update(dict.fromkeys(rng.sample(names, k=min(2, len(names))), True))
+    result = sort_units_by_dependencies(units, high_level_units_first=high_level_units_first)
+    assert sorted(result) == sorted(units)
+    assert [u["submodule"] for u in result.values()] == [u["submodule"] for u in units.values()]
+
+
+@pytest.mark.parametrize("high_level_units_first", [False, True])
+def test_process_sort_units(caplog, high_level_units_first):
+    layers = {"root_layers": [["api"]], "submodule_layers": {"api": [["api.routes"]]}}
+    deps = {"f": "Calls `@api.routes.g`.", "g": "Calls `@api.routes.h`.", "h": "Leaf."}
+    expected = ["f", "g", "h"] if high_level_units_first else ["h", "g", "f"]
+    md = "\n\n".join(f"### api.routes.{name}\n\n{deps[name]}" for name in reversed(expected))
+
+    unsorted, caplog = _capture(process_files, md, layers, high_level_units_first=high_level_units_first, caplog=caplog)
+    assert "intra-submodule" in caplog.text
+    caplog.clear()
+
+    result, caplog = _capture(
+        process_files, md, layers, high_level_units_first=high_level_units_first, sort_units=True, caplog=caplog
+    )
+    assert "intra-submodule" not in caplog.text
+    assert result["submodules"]["api.routes"]["units"] == expected
+    assert [u["name"] for u in result["units"].values()] == expected
+    assert all(all(result["units"][p]["dependencies"].values()) for p in result["units"])
+    assert unsorted["units"].keys() == result["units"].keys()
 
 
 # ---------------------------------------------------------------------------

@@ -66,6 +66,12 @@ def test_file_path_to_module_with_prefix():
     assert file_path_to_module(Path("/root/__init__.py"), Path("/root"), PY_CONFIG, ("pkg",)) == "pkg"
 
 
+def test_file_path_to_module_normalizes_names():
+    """Extra suffixes are dropped, so imports without them map to the same module."""
+    assert file_path_to_module(Path("/root/lib/flow.svelte.ts"), Path("/root"), PY_CONFIG) == "lib.flow"
+    assert file_path_to_module(Path("/root/my-app/vite-env.d.ts"), Path("/root"), PY_CONFIG) == "my-app.vite-env"
+
+
 def test_package_prefix(tmp_path):
     """When root itself is a package, its name (and package ancestors) prefix module paths."""
     (tmp_path / "verimo").mkdir()
@@ -164,6 +170,11 @@ def test_build_index_excludes(tmp_path):
     si, _, _ = build_index(pkg, exclude_patterns=["test_*"])
     assert "main.main" in si
     assert "test_main.test_it" not in si
+
+
+def test_build_index_skips_hidden_directories(tmp_path):
+    si, _, _ = build_index(_write_files(tmp_path, {"mod.py": "def f(): pass\n", ".venv/lib/dep.py": "def g(): pass\n"}))
+    assert set(si) == {"mod.f"}
 
 
 def test_build_index_private_excluded_by_default(tmp_path):

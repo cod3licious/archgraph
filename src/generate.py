@@ -16,7 +16,7 @@ from pathlib import Path
 
 import tree_sitter as ts
 
-from languages import LANGUAGE_CONFIGS, ImportInfo, LanguageConfig, node_text, register_languages
+from languages import LANGUAGE_CONFIGS, ImportInfo, LanguageConfig, module_segment, node_text, register_languages
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +31,16 @@ class UnitInfo:
     qualified_name: str  # "payments.gateway.charge"
     submodule: str  # "payments.gateway"
     name: str  # "charge"
-    kind: str  # "function" | "class" | "entry point"
+    kind: str  # "function" | "class" | "entry point" | ... (see LanguageConfig.definition_kinds)
     docstring: str | None = None
     raw_refs: list[str] = field(default_factory=list)  # names / dotted chains referenced in the unit
     is_private: bool = False
+    # Module path of the file the unit is defined in (whose imports its refs are resolved with);
+    # differs from the submodule for file units, e.g. Svelte components.
+    module: str = ""
+
+    def __post_init__(self) -> None:
+        self.module = self.module or self.submodule
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +62,7 @@ def file_path_to_module(path: Path, root: Path, config: LanguageConfig, prefix: 
         rel = path.relative_to(root)
     except ValueError:
         return None
-    parts = list(prefix) + list(rel.with_suffix("").parts)
+    parts = list(prefix) + [module_segment(part) for part in rel.parts]
     if parts and parts[-1] in config.package_filenames:
         parts.pop()
     return ".".join(parts) if parts else None
@@ -88,20 +94,32 @@ def package_prefix(root: Path, config: LanguageConfig) -> tuple[str, ...]:
 
 
 def _def_name_kind(definition: ts.Node | None, config: LanguageConfig) -> tuple[str, str] | None:
-    """Return (name, kind) for a function/class definition node, or None if it isn't one."""
-    if definition is None:
+    """Return (name, kind) for a definition node (e.g. a function or class), or None if it isn't one."""
+    if definition is None or definition.type not in config.definition_kinds:
         return None
-    if definition.type in config.function_node_types:
-        name_node = definition.child_by_field_name(config.function_name_field)
-        kind = "function"
-    elif definition.type in config.class_node_types:
-        name_node = definition.child_by_field_name(config.class_name_field)
-        kind = "class"
-    else:
-        return None
+    name_node = definition.child_by_field_name(config.name_field)
     if name_node is None:
         return None
-    return node_text(name_node), kind
+    return node_text(name_node), config.definition_kinds[definition.type]
+
+
+def _file_unit(root: ts.Node, module_path: str, kind: str, imports: list[ImportInfo], config: LanguageConfig) -> UnitInfo:
+    """The single unit a file consists of (e.g. a Svelte component), placed in its directory's submodule.
+
+    All imports count as refs, since they may be used outside of the parsed source (e.g. in
+    a component's markup). A file at the root becomes its own submodule (e.g. `App.App`).
+    """
+    submodule, _, name = module_path.rpartition(".")
+    submodule = submodule or module_path
+    return UnitInfo(
+        qualified_name=f"{submodule}.{name}",
+        submodule=submodule,
+        name=name,
+        kind=kind,
+        docstring=config.docstring_extractor(root),
+        raw_refs=list(dict.fromkeys([*config.ref_extractor(root), *(imp.local_name for imp in imports)])),
+        module=module_path,
+    )
 
 
 # Unit holding the refs of a file's script entry point (e.g. Python's `if __name__ == "__main__":` block)
@@ -124,8 +142,17 @@ def parse_file(
     blocks become a (public) `__main__` unit, so the dependencies of CLI code aren't lost.
     `is_package` marks package files (e.g. __init__.py), whose module path is the
     package itself, which matters for resolving relative imports.
+
+    For languages with file units (e.g. Svelte), the file is a single unit instead, which
+    the module's default export (a `default` import) refers to.
     """
+    if config.preprocess is not None:
+        source = config.preprocess(source)
     root = parser.parse(source).root_node
+    imports = config.import_extractor(root, module_path, is_package)
+    if config.file_unit_kind is not None:
+        unit = _file_unit(root, module_path, config.file_unit_kind, imports, config)
+        return [unit], [*imports, ImportInfo("default", unit.qualified_name)]
     units: list[UnitInfo] = []
     for child in root.children:
         if config.is_entry_point(child):
@@ -151,7 +178,7 @@ def parse_file(
                 is_private=config.is_private(name, definition),
             )
         )
-    return units, config.import_extractor(root, module_path, is_package)
+    return units, imports
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +215,8 @@ def build_index(
         namespace = "" if prefix or any(p.stem == root.name for p in root.iterdir()) else f"{root.name}."
 
         for path in sorted(root.rglob(f"*.{ext}")):
-            if any(fnmatch(path.name, pat) for pat in exclude):
+            hidden = any(part.startswith(".") for part in path.relative_to(root).parts)
+            if hidden or any(fnmatch(path.name, pat) for pat in exclude):
                 continue
             module_path = file_path_to_module(path, root, config, prefix)
             if module_path is None:
@@ -203,7 +231,10 @@ def build_index(
                     logger.warning(f"Duplicate unit: {unit.qualified_name}")
                 index[unit.qualified_name] = unit
 
-            import_map[module_path] = {imp.local_name: imp.qualified_name.removeprefix(namespace) for imp in imports}
+            # Files mapping to the same module (e.g. `x.ts` and `x.svelte.ts`) share its imports
+            import_map.setdefault(module_path, {}).update(
+                {imp.local_name: imp.qualified_name.removeprefix(namespace) for imp in imports}
+            )
 
     for qname in sorted({unit.submodule for unit in symbol_index.values()} & symbol_index.keys()):
         logger.warning(f"Skipping {qname}: unit path collides with the submodule of the same name")
@@ -283,9 +314,9 @@ def resolve_dependencies(
     units = symbol_index | helpers
 
     def resolve(unit: UnitInfo, seen: set[str]) -> Iterator[str]:
-        local_imports = import_map.get(unit.submodule, {})
+        local_imports = import_map.get(unit.module, {})
         for ref in unit.raw_refs:
-            target = _resolve_target(_qualify_ref(ref, local_imports, unit.submodule), units, import_map)
+            target = _resolve_target(_qualify_ref(ref, local_imports, unit.module), units, import_map)
             if target is None:
                 continue
             if target not in helpers:
