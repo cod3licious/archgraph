@@ -120,7 +120,7 @@ Trailing characters inside the backticks are ignored (e.g., `` `@core.db.execute
 
 ### Auto-generating input files with `generate.py`
 
-`generate.py` uses [tree-sitter](https://tree-sitter.github.io/) to deterministically extract public functions, classes, their docstrings, and cross-module dependencies from a codebase. Dependencies include calls, callbacks, decorators, base classes, and type annotations (script entry points like `if __name__ == "__main__":` blocks become a `__main__` unit); they are followed through re-exports (e.g., in `__init__.py`) and through private helpers (whose own dependencies are attributed to their public callers). It writes both `units.md` and a draft `layers.json` into the specified output folder. The (sub)modules in the layers draft are sorted by dependency flow using topological sorting: modules that depend on others (consumers) are placed at the top, modules that are depended upon (providers) at the bottom, and isolated modules with no connections at the very bottom. This gives a reasonable starting point that you should then adapt to represent the target architecture. 
+`generate.py` uses [tree-sitter](https://tree-sitter.github.io/) to deterministically extract public functions, classes, their docstrings, and cross-module dependencies from a codebase. Dependencies include calls, callbacks, decorators, base classes, and type annotations (script entry points like `if __name__ == "__main__":` blocks become a `__main__` unit); they are followed through re-exports (e.g., in `__init__.py`) and through private helpers (whose own dependencies are attributed to their public callers). It writes both `units.md` and a draft `layers.json` into the specified output folder. The (sub)modules in the layers draft are arranged in rows by dependency flow: modules that depend on others (consumers) are placed at the top, each module that is depended upon (provider) directly below its lowest consumer, and isolated modules with no connections at the very bottom. Modules that don't depend on each other share a row (members of a dependency cycle get consecutive rows), rows hold at most `--max-row-width` modules, and modules within a row are ordered to reduce crossing dependencies. This gives a reasonable starting point that you should then adapt to represent the target architecture. 
 
 Currently Python is supported out of the box; see below for how to add other languages.
 
@@ -132,6 +132,7 @@ Additional options:
 - `--include-private` - include private symbols (e.g., `_`-prefixed in Python; excluded by default)
 - `--exclude "test_*,conftest*"` - comma-separated glob patterns for filenames to skip
 - `--full-docstrings` - include full docstrings in unit descriptions (by default only the first paragraph is used)
+- `--max-row-width 5` - max (sub)modules per row in the layers draft (default 5; 0 = unlimited)
 
 Currently only Python is supported. Adding a new language requires three steps in `src/languages.py`:
 

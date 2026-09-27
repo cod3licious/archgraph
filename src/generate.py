@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import heapq
 import json
 import logging
 import re
@@ -11,6 +10,8 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
+from functools import cache
+from itertools import batched, pairwise
 from pathlib import Path
 
 import tree_sitter as ts
@@ -406,37 +407,80 @@ def _net_flow_sorted(scc: list[str], edges: dict[str, set[str]]) -> list[str]:
     return sorted(scc, key=lambda i: (-(out_deg[i] - in_deg[i]), -in_deg[i], i))
 
 
-def _dep_sorted(items: list[str], dep_graph: dict[str, set[str]]) -> list[str]:
-    """Sort items by dependency flow: consumers at top, providers at bottom.
+def _reduce_crossings(rows: list[list[str]], edges: dict[str, set[str]], sweeps: int = 4) -> list[list[str]]:
+    """Reorder the nodes within each row to reduce edge crossings (barycenter heuristic).
 
-    Cycles are condensed into strongly connected components, which are then
-    topologically sorted with Kahn's algorithm (alphabetical tiebreak), so providers
-    always end up below their consumers. Nodes within a cycle are ordered by a
-    net-flow heuristic. Isolated nodes (no edges at all) are placed at the very bottom.
+    Alternating down and up sweeps sort each row by the mean position of a node's neighbors
+    in the rows above (down) or below (up); nodes without such neighbors keep their position,
+    and ties keep the current order (rows start out alphabetical). Neighbors in any row count
+    (not just the adjacent one), since long edges are common here. Positions are centered
+    per row, like the rows in the box graph.
+    """
+    rows = [list(row) for row in rows]
+    row_of = {v: r for r, row in enumerate(rows) for v in row}
+    neighbors: dict[str, set[str]] = {v: set() for v in row_of}
+    for v, targets in edges.items():
+        for t in targets:
+            neighbors[v].add(t)
+            neighbors[t].add(v)
+    pos = {v: i - (len(row) - 1) / 2 for row in rows for i, v in enumerate(row)}
+
+    def barycenter(v: str, downward: bool) -> float:
+        side = [pos[n] for n in neighbors[v] if (row_of[n] < row_of[v] if downward else row_of[n] > row_of[v])]
+        return sum(side) / len(side) if side else pos[v]
+
+    for _ in range(sweeps):
+        for downward in (True, False):
+            for row in rows if downward else reversed(rows):
+                row.sort(key=lambda v, down=downward: barycenter(v, down))
+                pos.update({v: i - (len(row) - 1) / 2 for i, v in enumerate(row)})
+    return rows
+
+
+def _dep_layers(items: list[str], dep_graph: dict[str, set[str]], max_width: int = 0) -> list[list[str]]:
+    """Arrange items in rows by dependency flow: consumers at top, providers below.
+
+    Every node sits as high as possible, i.e., in the row below its lowest consumer, so nodes
+    within a row never depend on each other. Cycles (strongly connected components) can't
+    share a row and are chained into successive rows, ordered by a net-flow heuristic.
+    Rows hold at most max_width nodes (0 = unlimited): rows are filled top-down with the nodes
+    whose consumers are all placed already, preferring those with the longest path to the
+    bottom (so the depth doesn't grow unnecessarily); the rest move down. Isolated nodes
+    (no edges at all) fill the bottom row(s). Finally, rows are reordered to reduce crossings.
     """
     item_set = set(items)
     edges = {i: dep_graph.get(i, set()) & item_set for i in items}
     has_incoming = {t for targets in edges.values() for t in targets}
     isolated = sorted(i for i in items if not edges[i] and i not in has_incoming)
     connected = [i for i in items if edges[i] or i in has_incoming]
+    width = max_width if max_width > 0 else max(len(items), 1)
 
+    # Replacing the edges within each cycle by a chain through its members yields a DAG
     sccs = _strongly_connected_components(connected, edges)
     component = {node: k for k, scc in enumerate(sccs) for node in scc}
-    comp_edges = [{component[t] for node in scc for t in edges[node]} - {k} for k, scc in enumerate(sccs)]
-    in_deg = Counter(t for targets in comp_edges for t in targets)
+    dag = {i: {t for t in edges[i] if component[t] != component[i]} for i in connected}
+    for scc in sccs:
+        chain = _net_flow_sorted(scc, edges)
+        for consumer, provider in pairwise(chain):
+            dag[consumer].add(provider)
+    consumers: dict[str, set[str]] = {i: set() for i in connected}
+    for i in connected:
+        for t in dag[i]:
+            consumers[t].add(i)
 
-    heap = [(min(scc), k) for k, scc in enumerate(sccs) if in_deg[k] == 0]
-    heapq.heapify(heap)
-    result: list[str] = []
-    while heap:
-        _, k = heapq.heappop(heap)
-        result.extend(_net_flow_sorted(sccs[k], edges))
-        for t in comp_edges[k]:
-            in_deg[t] -= 1
-            if in_deg[t] == 0:
-                heapq.heappush(heap, (min(sccs[t]), t))
+    @cache
+    def height(v: str) -> int:
+        return 1 + max(map(height, dag[v]), default=0)
 
-    return result + isolated
+    rows: list[list[str]] = []
+    placed: set[str] = set()
+    pending = sorted(connected, key=lambda v: (-height(v), v))
+    while pending:
+        rows.append(sorted([v for v in pending if consumers[v] <= placed][:width]))
+        placed.update(rows[-1])
+        pending = [v for v in pending if v not in placed]
+    rows += [list(batch) for batch in batched(isolated, width, strict=False)]
+    return _reduce_crossings(rows, edges)
 
 
 def _root_module_depth(submodules: set[str]) -> int:
@@ -461,14 +505,20 @@ def _root_module_depth(submodules: set[str]) -> int:
     return min(common, min_len - 1) + 1
 
 
+# Box graph boxes are typically ~250px wide plus gaps, so about 5 fit a ~1600px wide graph pane
+DEFAULT_MAX_ROW_WIDTH = 5
+
+
 def generate_layers_draft(
     symbol_index: dict[str, UnitInfo],
     dependencies: dict[str, list[str]],
+    *,
+    max_row_width: int = DEFAULT_MAX_ROW_WIDTH,
 ) -> dict:
     """Generate a draft layers.json ordered by dependency flow, covering every unit's submodule.
 
-    Each module and submodule gets its own row. The user is expected to reorder
-    rows and merge siblings to express the intended dependency hierarchy.
+    (Sub)modules that don't depend on each other share rows (at most max_row_width, 0 = unlimited).
+    The user is expected to adapt the rows to express the intended dependency hierarchy.
     A root module with both its own units (e.g. from __init__.py) and nested
     submodules lists itself as one of its submodules.
     """
@@ -484,7 +534,7 @@ def generate_layers_draft(
     sm_deps = _aggregate_deps_by(symbol_index, dependencies, lambda u: u.submodule)
     root_deps = _aggregate_deps_by(symbol_index, dependencies, lambda u: root_key(u.submodule))
 
-    root_layers = [[m] for m in _dep_sorted(list(root_modules), root_deps)]
+    root_layers = _dep_layers(sorted(root_modules), root_deps, max_row_width)
 
     # Root modules without nested submodules stay leaves (not in submodule_layers)
     submodule_layers: dict[str, list[list[str]]] = {}
@@ -492,7 +542,7 @@ def generate_layers_draft(
         nested = [sm for sm in submodules if sm.startswith(root + ".")]
         if nested:
             own = [root] if root in submodules else []
-            submodule_layers[root] = [[sm] for sm in _dep_sorted(own + nested, sm_deps)]
+            submodule_layers[root] = _dep_layers(own + nested, sm_deps, max_row_width)
 
     return {"root_layers": root_layers, "submodule_layers": submodule_layers}
 
@@ -509,6 +559,7 @@ def generate_folder(
     include_private: bool = False,
     exclude_patterns: list[str] | None = None,
     full_docstrings: bool = False,
+    max_row_width: int = DEFAULT_MAX_ROW_WIDTH,
 ) -> None:
     """Analyze the codebase in input_dir and write units.md and a draft layers.json to output_dir."""
     register_languages()
@@ -526,7 +577,8 @@ def generate_folder(
     units_path.write_text(format_units_md(symbol_index, deps, full_docstrings=full_docstrings), encoding="utf-8")
     logger.info(f"Wrote {units_path}")
     layers_path = output_dir / "layers.json"
-    layers_path.write_text(json.dumps(generate_layers_draft(symbol_index, deps), indent=2) + "\n", encoding="utf-8")
+    layers = generate_layers_draft(symbol_index, deps, max_row_width=max_row_width)
+    layers_path.write_text(json.dumps(layers, indent=2) + "\n", encoding="utf-8")
     logger.info(f"Wrote {layers_path}")
     logger.info("Please adjust the (sub)module layer hierarchy in `layers.json` to reflect the target architecture.")
 
@@ -542,6 +594,12 @@ def add_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--full-docstrings", action="store_true", help="Include full docstrings instead of just the first paragraph"
+    )
+    parser.add_argument(
+        "--max-row-width",
+        type=int,
+        default=DEFAULT_MAX_ROW_WIDTH,
+        help=f"Max (sub)modules per row in the layers.json draft (default: {DEFAULT_MAX_ROW_WIDTH}, 0 = unlimited)",
     )
 
 
@@ -560,4 +618,5 @@ if __name__ == "__main__":
         include_private=args.include_private,
         exclude_patterns=args.exclude,
         full_docstrings=args.full_docstrings,
+        max_row_width=args.max_row_width,
     )

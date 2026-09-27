@@ -72,6 +72,7 @@ if __name__ == "__main__":
         include_private=args.include_private,
         exclude_patterns=args.exclude,
         full_docstrings=args.full_docstrings,
+        max_row_width=args.max_row_width,
     )
     try:
         result_path = prepare.prepare_folder(

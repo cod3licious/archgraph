@@ -1,6 +1,7 @@
 """Tests for generate.py and languages.py."""
 
 import json
+import random
 import textwrap
 from pathlib import Path
 
@@ -838,8 +839,8 @@ def test_layers_draft_basic():
         "core.db.query": UnitInfo("core.db.query", "core.db", "query", "function"),
     }
     draft = generate_layers_draft(si, {})
-    assert draft["root_layers"] == [["api"], ["core"]]
-    assert draft["submodule_layers"]["api"] == [["api.auth"], ["api.routes"]]
+    assert draft["root_layers"] == [["api", "core"]]
+    assert draft["submodule_layers"]["api"] == [["api.auth", "api.routes"]]
     assert draft["submodule_layers"]["core"] == [["core.db"]]
 
 
@@ -851,8 +852,8 @@ def test_layers_draft_strips_shared_root_package():
         "pkg.backend.server.h": UnitInfo("pkg.backend.server.h", "pkg.backend.server", "h", "function"),
     }
     draft = generate_layers_draft(si, {})
-    assert draft["root_layers"] == [["pkg.backend"], ["pkg.core"]]
-    assert draft["submodule_layers"]["pkg.core"] == [["pkg.core.analysis"], ["pkg.core.interp"]]
+    assert draft["root_layers"] == [["pkg.backend", "pkg.core"]]
+    assert draft["submodule_layers"]["pkg.core"] == [["pkg.core.analysis", "pkg.core.interp"]]
     assert draft["submodule_layers"]["pkg.backend"] == [["pkg.backend.server"]]
 
 
@@ -864,6 +865,10 @@ def test_layers_draft_leaf_module():
     draft = generate_layers_draft(si, {})
     assert draft["root_layers"] == [["utils"]]
     assert "utils" not in draft["submodule_layers"]
+
+
+def test_layers_draft_empty():
+    assert generate_layers_draft({}, {}) == {"root_layers": [], "submodule_layers": {}}
 
 
 def test_layers_draft_root_with_direct_units_lists_itself():
@@ -887,7 +892,7 @@ def test_layers_draft_nested_package_with_own_units():
         "pkg.api.h": UnitInfo("pkg.api.h", "pkg.api", "h", "function"),
     }
     draft = generate_layers_draft(si, {})
-    assert draft["submodule_layers"] == {"pkg.core": [["pkg.core"], ["pkg.core.impl"]]}
+    assert draft["submodule_layers"] == {"pkg.core": [["pkg.core", "pkg.core.impl"]]}
     assert set(flatten_layers(draft)) == {u.submodule for u in si.values()}
 
 
@@ -902,50 +907,24 @@ def test_layers_draft_valid_json():
 
 
 def test_layers_draft_dep_ordering():
-    """Modules are sorted by dependency flow: consumers at top, providers at bottom."""
+    """Consumers above providers, at the root level and within each module."""
     si = {
         "app.main.run": UnitInfo("app.main.run", "app.main", "run", "function"),
+        "app.cli.parse": UnitInfo("app.cli.parse", "app.cli", "parse", "function"),
         "app.api.handle": UnitInfo("app.api.handle", "app.api", "handle", "function"),
         "lib.db.query": UnitInfo("lib.db.query", "lib.db", "query", "function"),
         "lib.utils.fmt": UnitInfo("lib.utils.fmt", "lib.utils", "fmt", "function"),
     }
-    # app.main -> app.api -> lib.db; lib.utils has no deps (isolated)
+    # app.main -> app.api, app.cli; app.api -> lib.db; lib.db and lib.utils are unrelated within lib
     deps = {
-        "app.main.run": ["app.api.handle", "lib.db.query"],
+        "app.main.run": ["app.api.handle", "app.cli.parse", "lib.db.query"],
         "app.api.handle": ["lib.db.query"],
-        "lib.db.query": [],
-        "lib.utils.fmt": [],
     }
     draft = generate_layers_draft(si, deps)
-
-    # Root level: app depends on lib, so app on top
-    root_order = [m for row in draft["root_layers"] for m in row]
-    assert root_order.index("app") < root_order.index("lib")
-
-    # Within app: main depends on api, so main on top
-    sub_order = [sm for row in draft["submodule_layers"]["app"] for sm in row]
-    assert sub_order.index("app.main") < sub_order.index("app.api")
-
-    # Within lib: db is depended upon (by app), utils is isolated -> utils at bottom
-    sub_order = [sm for row in draft["submodule_layers"]["lib"] for sm in row]
-    assert sub_order.index("lib.db") < sub_order.index("lib.utils")
-
-
-def test_layers_draft_isolated_modules_at_bottom():
-    """Modules with no dependencies (in or out) sort to the very bottom."""
-    si = {
-        "consumer.sub.f": UnitInfo("consumer.sub.f", "consumer.sub", "f", "function"),
-        "provider.sub.g": UnitInfo("provider.sub.g", "provider.sub", "g", "function"),
-        "isolated.sub.h": UnitInfo("isolated.sub.h", "isolated.sub", "h", "function"),
+    assert draft == {
+        "root_layers": [["app"], ["lib"]],
+        "submodule_layers": {"app": [["app.main"], ["app.api", "app.cli"]], "lib": [["lib.db", "lib.utils"]]},
     }
-    deps = {
-        "consumer.sub.f": ["provider.sub.g"],
-        "provider.sub.g": [],
-        "isolated.sub.h": [],
-    }
-    draft = generate_layers_draft(si, deps)
-    root_order = [m for row in draft["root_layers"] for m in row]
-    assert root_order == ["consumer", "provider", "isolated"]
 
 
 def _leaf_modules(*names: str) -> dict[str, UnitInfo]:
@@ -953,110 +932,129 @@ def _leaf_modules(*names: str) -> dict[str, UnitInfo]:
     return {f"{n}.f": UnitInfo(f"{n}.f", n, "f", "function") for n in names}
 
 
-def _root_order(si, deps) -> list[str]:
-    draft = generate_layers_draft(si, deps)
-    return [m for row in draft["root_layers"] for m in row]
+def _module_deps(edges: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Unit dependencies for leaf modules created by _leaf_modules, given as module -> modules."""
+    return {f"{src}.f": [f"{dst}.f" for dst in targets] for src, targets in edges.items()}
+
+
+def _root_layers(edges: dict[str, list[str]], *isolated: str, **kwargs) -> list[list[str]]:
+    """Root layers of leaf modules connected by module-level edges, plus isolated modules."""
+    names = {*edges, *(t for targets in edges.values() for t in targets), *isolated}
+    return generate_layers_draft(_leaf_modules(*names), _module_deps(edges), **kwargs)["root_layers"]
+
+
+def _reaches(edges: dict[str, list[str]], src: str, dst: str) -> bool:
+    """True if there is a path from src to dst."""
+    seen, stack = set(), [src]
+    while stack:
+        node = stack.pop()
+        if node == dst:
+            return True
+        if node not in seen:
+            seen.add(node)
+            stack.extend(edges.get(node, []))
+    return False
+
+
+def _assert_valid_layers(edges: dict[str, list[str]], layers: list[list[str]], max_width: int) -> None:
+    """Every edge outside a cycle points strictly downward, rows respect the width, nodes appear once."""
+    row_of = {m: r for r, row in enumerate(layers) for m in row}
+    assert len(row_of) == sum(len(row) for row in layers)
+    assert all(len(row) <= max_width for row in layers)
+    for src, targets in edges.items():
+        for dst in targets:
+            assert row_of[src] != row_of[dst], (src, dst)
+            if not _reaches(edges, dst, src):
+                assert row_of[src] < row_of[dst], (src, dst)
+
+
+# archgraph -> generate -> languages, archgraph -> prepare
+ARCHGRAPH_EDGES = {"archgraph": ["generate", "prepare"], "generate": ["languages"]}
+
+
+def test_layers_draft_siblings_share_row():
+    assert _root_layers(ARCHGRAPH_EDGES) == [["archgraph"], ["generate", "prepare"], ["languages"]]
+
+
+def test_layers_draft_top_aligned():
+    """Nodes sit directly below their lowest consumer, not directly above their highest provider."""
+    edges = {"app": ["service", "config"], "service": ["repo"], "repo": ["db"]}
+    assert _root_layers(edges) == [["app"], ["config", "service"], ["repo"], ["db"]]
 
 
 def test_layers_draft_diamond():
-    """Diamond: a -> b, a -> c, b -> d, c -> d. Topo sort respects depth."""
-    si = _leaf_modules("a", "b", "c", "d")
-    deps = {
-        "a.f": ["b.f", "c.f"],
-        "b.f": ["d.f"],
-        "c.f": ["d.f"],
-        "d.f": [],
-    }
-    order = _root_order(si, deps)
-    assert order.index("a") < order.index("b")
-    assert order.index("a") < order.index("c")
-    assert order.index("b") < order.index("d")
-    assert order.index("c") < order.index("d")
+    edges = {"a": ["b", "c"], "b": ["d"], "c": ["d"]}
+    assert _root_layers(edges) == [["a"], ["b", "c"], ["d"]]
 
 
-def test_layers_draft_cycle_fallback():
-    """Cycle: a -> b -> c -> a. Falls back to net-flow heuristic."""
-    si = _leaf_modules("a", "b", "c")
-    # a also depends on an external-ish node to break symmetry
-    deps = {
-        "a.f": ["b.f"],
-        "b.f": ["c.f"],
-        "c.f": ["a.f"],
-    }
-    # All three are in a cycle — should not crash, should return all three
-    order = _root_order(si, deps)
-    assert set(order) == {"a", "b", "c"}
-
-
-def test_layers_draft_cycle_with_external():
-    """Cycle with an external dependency: x -> (a <-> b), topo sort places x first."""
-    si = _leaf_modules("a", "b", "x")
-    deps = {
-        "x.f": ["a.f"],
-        "a.f": ["b.f"],
-        "b.f": ["a.f"],
-    }
-    order = _root_order(si, deps)
-    # x has no incoming deps and is not in the cycle — Kahn places it first
-    assert order[0] == "x"
-    assert set(order[1:]) == {"a", "b"}
-
-
-def test_layers_draft_cycles_keep_providers_below_consumers():
-    """Acyclic nodes downstream of cycles stay below them: a<->b, c<->d, a,b,c -> q, q -> p."""
-    si = _leaf_modules("a", "b", "c", "d", "p", "q", "z")
-    deps = {
-        "a.f": ["b.f", "q.f"],
-        "b.f": ["a.f", "q.f"],
-        "c.f": ["d.f", "q.f"],
-        "d.f": ["c.f"],
-        "q.f": ["p.f"],
-        "p.f": [],
-        "z.f": [],
-    }
-    assert _root_order(si, deps) == ["a", "b", "c", "d", "q", "p", "z"]
+def test_layers_draft_cycle_chained_in_consecutive_rows():
+    """Cycle members can't be siblings; they are chained in net-flow order (alphabetical on ties)."""
+    assert _root_layers({"a": ["b"], "b": ["c"], "c": ["a"]}) == [["a"], ["b"], ["c"]]
+    assert _root_layers({"x": ["a"], "a": ["b"], "b": ["a"]}) == [["x"], ["a"], ["b"]]
 
 
 def test_layers_draft_cycle_members_by_net_flow():
     """Within a cycle, the node with the most outgoing (vs incoming) edges comes first."""
-    si = _leaf_modules("w", "x", "y")
-    deps = {"x.f": ["y.f", "w.f"], "y.f": ["w.f"], "w.f": ["x.f"]}
-    assert _root_order(si, deps) == ["x", "y", "w"]
+    assert _root_layers({"x": ["y", "w"], "y": ["w"], "w": ["x"]}) == [["x"], ["y"], ["w"]]
 
 
-def test_layers_draft_all_isolated():
-    """All modules isolated — should fall back to alphabetical order."""
-    si = _leaf_modules("z", "m", "a")
-    deps = {"z.f": [], "m.f": [], "a.f": []}
-    assert _root_order(si, deps) == ["a", "m", "z"]
+def test_layers_draft_cycles_keep_providers_below_consumers():
+    """Acyclic nodes downstream of cycles stay below all their consumers: a<->b, c<->d, a,b,c -> q, q -> p."""
+    edges = {"a": ["b", "q"], "b": ["a", "q"], "c": ["d", "q"], "d": ["c"], "q": ["p"]}
+    assert _root_layers(edges, "z") == [["a", "c"], ["b", "d"], ["q"], ["p"], ["z"]]
 
 
-def test_layers_draft_alphabetical_tiebreak():
-    """Nodes at the same depth in the DAG sort alphabetically."""
-    si = _leaf_modules("top", "beta", "alpha")
-    # top -> beta, top -> alpha (beta and alpha are at the same depth)
-    deps = {
-        "top.f": ["beta.f", "alpha.f"],
-        "beta.f": [],
-        "alpha.f": [],
-    }
-    order = _root_order(si, deps)
-    assert order[0] == "top"
-    assert order[1:] == ["alpha", "beta"]
+def test_layers_draft_isolated_modules_share_bottom_rows():
+    """Isolated modules (no edges at all) share the bottom row(s), alphabetically, split by the max width."""
+    assert _root_layers({"consumer": ["provider"]}, "lone2", "lone1") == [["consumer"], ["provider"], ["lone1", "lone2"]]
+    assert _root_layers({}, "z", "m", "a") == [["a", "m", "z"]]
+    assert _root_layers({}, *"gfedcba", max_row_width=3) == [["a", "b", "c"], ["d", "e", "f"], ["g"]]
 
 
-def test_layers_draft_mixed_isolated_and_connected():
-    """Multiple isolated nodes among connected ones, all at the bottom."""
-    si = _leaf_modules("consumer", "provider", "lone1", "lone2")
-    deps = {
-        "consumer.f": ["provider.f"],
-        "provider.f": [],
-        "lone1.f": [],
-        "lone2.f": [],
-    }
-    order = _root_order(si, deps)
-    assert order[:2] == ["consumer", "provider"]
-    assert order[2:] == ["lone1", "lone2"]  # isolated, alphabetical
+def test_layers_draft_max_row_width():
+    """Overflow moves down, keeping the node with the longer path to the bottom high to avoid extra depth."""
+    edges = {"r": ["a", "b", "z"], "z": ["y"]}
+    assert _root_layers(edges, max_row_width=2) == [["r"], ["a", "z"], ["b", "y"]]
+    fan_out = {"root": [f"leaf{i}" for i in range(7)]}
+    assert [len(row) for row in _root_layers(fan_out)] == [1, 5, 2]  # default width
+    assert [len(row) for row in _root_layers(fan_out, max_row_width=3)] == [1, 3, 3, 1]
+
+
+def test_layers_draft_max_row_width_zero_is_unlimited():
+    edges = {"root": [f"leaf{i}" for i in range(7)], "leaf0": ["base"], "leaf6": ["base"]}
+    unlimited = _root_layers(edges, max_row_width=0)
+    assert unlimited == _root_layers(edges, max_row_width=100)
+    assert [len(row) for row in unlimited] == [1, 7, 1]
+
+
+def test_layers_draft_keeps_edges_downward():
+    """Property check: over various graphs and widths, edges outside cycles always point down."""
+    rng = random.Random(0)
+    names = [f"m{i:02d}" for i in range(20)]
+    graphs = [
+        ARCHGRAPH_EDGES,
+        {"a": ["b", "q"], "b": ["a", "q"], "c": ["d", "q"], "d": ["c"], "q": ["p"]},
+        *({n: rng.sample([m for m in names if m != n], rng.randint(0, 3)) for n in names} for _ in range(5)),
+    ]
+    for edges in graphs:
+        for width in (1, 2, 3, 0):
+            layers = _root_layers(edges, max_row_width=width)
+            _assert_valid_layers(edges, layers, width or len(names))
+
+
+def test_layers_draft_reduces_crossings():
+    """Rows are ordered by the positions of their neighbors instead of alphabetically."""
+    edges = {"a": ["y", "shared"], "b": ["x", "shared"], "y": ["base"], "x": ["base"]}
+    assert _root_layers(edges) == [["a", "b"], ["y", "shared", "x"], ["base"]]
+
+
+def test_layers_draft_deterministic():
+    edges = {"x": ["y", "w", "q"], "y": ["w", "q"], "w": ["x"], "q": ["p", "r"], "s": ["p"]}
+    reversed_edges = {src: list(reversed(targets)) for src, targets in reversed(edges.items())}
+    si = _leaf_modules("x", "y", "w", "q", "p", "r", "s", "lone")
+    first = generate_layers_draft(si, _module_deps(edges))
+    assert generate_layers_draft(dict(reversed(si.items())), _module_deps(reversed_edges)) == first
+    assert generate_layers_draft(si, _module_deps(edges)) == first
 
 
 # =============================================================================
